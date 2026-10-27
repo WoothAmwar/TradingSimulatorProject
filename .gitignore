@@ -1,2 +1,38 @@
-*.json
-*.txt
+# Local-only files (previously covered by *.json / *.txt)
+.mcp.json
+.claude
+/README.txt
+
+# Secrets
+.env
+.env*.local
+.env.*
+!.env.example
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+*.tsbuildinfo
+next-env.d.ts
+.vercel
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+.hypothesis/
+*.egg-info/
+dist/
+build/
+
+# Generated artifacts
+engine/out/
+web/public/py/*.whl
