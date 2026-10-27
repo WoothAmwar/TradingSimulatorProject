@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useEffect, useState, useTransition } from "react";
 import {
   addAllowlistEmail,
   createGroup,
@@ -60,7 +60,13 @@ function ErrorText({ error }: { error: string | null }) {
   return error ? <p className="mt-2 text-sm text-ask">{error}</p> : null;
 }
 
-export function AdminPanel({ data }: { data: AdminData }) {
+export function AdminPanel({ data, engineUrl }: { data: AdminData; engineUrl: string }) {
+  // Wake the engine as soon as an admin opens the page: on Render's free plan it sleeps after
+  // 15 idle minutes and takes about a minute to start, so lobby actions are ready by first click.
+  useEffect(() => {
+    fetch(`${engineUrl}/health`, { mode: "no-cors", cache: "no-store" }).catch(() => {});
+  }, [engineUrl]);
+
   return (
     <section className="space-y-6">
       <h2 className="text-lg font-semibold">

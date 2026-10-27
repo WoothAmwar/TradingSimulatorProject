@@ -4,9 +4,10 @@ services:
     name: trading-engine
     runtime: docker
     region: ohio # next to the Supabase project (us-east-2)
-    # Paid, always-on: free instances spin down when idle, which would kill a running lobby.
-    plan: 0.5c-512mb
-    numInstances: 1 # one process owns each lobby's tick loop (enforced by a Supabase lease)
+    # Free: 0.1 CPU / 512 MB, single instance. It spins down after 15 minutes without inbound
+    # traffic; live bots send orders every tick and open pages send a keep-alive, and a restart
+    # or spin-down is recovered by replaying the lobby from Supabase.
+    plan: free
     dockerfilePath: ./engine/Dockerfile
     dockerContext: ./engine
     buildFilter:

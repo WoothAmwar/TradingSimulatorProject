@@ -109,6 +109,7 @@ def test_full_lobby_lifecycle():
             snap = viewer.receive_json()
             assert snap["type"] == "snapshot" and snap["status"] == "scheduled"
             assert snap["tick"] == K - 1 and len(snap["history"]["STABLE"]) == K // 5
+            viewer.send_json({"type": "ping"})  # keep-alive from open pages; ignored
 
             t1.send_json({"type": "auth", "token": "user:u1"})
             t2.send_json({"type": "auth", "token": "user:u2"})
@@ -167,8 +168,12 @@ def test_late_and_unauthorized_traders():
         with client.websocket_connect(f"/ws/trade/{LOBBY}") as ws:
             ws.send_json({"type": "auth", "token": "user:u1"})
             state = next_of(ws, "state")
+            ws.send_json({"type": "ping"})  # keep-alive: must not produce a notice
             ws.send_json({"type": "orders", "tick": state["tick"] - 5, "response": {}})
-            assert next_of(ws, "late")["tick"] == state["tick"] - 5
+            msg = ws.receive_json()
+            while msg["type"] in ("state", "result"):
+                msg = ws.receive_json()
+            assert msg["type"] == "late" and msg["tick"] == state["tick"] - 5
         client.post(f"/admin/lobbies/{LOBBY}/stop", headers=ADMIN)
         assert store.lobbies[LOBBY].status == "finished"
 

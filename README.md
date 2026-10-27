@@ -88,19 +88,50 @@ cd web/runtime-tests && npm install && npm test # bot workers under Node + headl
 
 ## Deploying
 
-**Engine (Render).**
-- Create the service from `render.yaml`, either through the Render Blueprint flow or the Render MCP.
-- Set `SUPABASE_SECRET_KEY` and `ALLOWED_ORIGINS` (your Vercel URL) when prompted.
-- Use the paid `0.5c-512mb` plan, which stays always-on. Auto-deploy is off; deploy deliberately,
-  never during a live lobby.
+Everything runs on free plans: Render Free, Supabase Free and Vercel Hobby.
 
-**Web (Vercel).**
+**Engine (Render, free plan).**
+- Create the service from `render.yaml`, either through the Render Blueprint flow or the Render MCP:
+  a Docker web service built from `engine/`, in Ohio, with `/health` as its health check.
+- Set `SUPABASE_SECRET_KEY` yourself in the Render dashboard (never paste it into a chat or commit).
+  Set `ALLOWED_ORIGINS` to your Vercel URL, plus `http://localhost:3000` if you develop against it.
+- Auto-deploy is off. Deploy deliberately, never during a live lobby: a deploy drops every WebSocket.
+
+**Web (Vercel Hobby).**
 - Import the repo with root directory `web`.
 - Set `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` and
   `NEXT_PUBLIC_ENGINE_URL` (the Render URL).
 
+## Free-plan limits and how the app handles them
+
+**Render Free web service** (0.1 CPU, 512 MB, one instance)
+- *Spin-down.* It sleeps after 15 minutes without inbound traffic. WebSocket messages from the
+  browser count. Live bots send orders every tick, and open pages send a keep-alive every 4 minutes
+  while a lobby is scheduled, running or paused. Waking takes about a minute; the admin panel
+  wakes the engine when it loads.
+- *Restarts.* Render may restart a free service at any time. The engine rebuilds every running or
+  paused lobby by replaying its recorded orders from Supabase. The market freezes for a minute or
+  two, then continues exactly where it was. Browsers reconnect on their own.
+- *CPU.* Building a dataset or starting a lobby takes roughly 10–20 seconds on 0.1 CPU. Don't build
+  datasets while another lobby is live.
+- *Hours.* Each workspace gets 750 free instance hours a month, and sleeping doesn't count. One
+  service running all month fits, as long as no other free services share the workspace.
+
+**Supabase Free**
+- *Database size.* At 500 MB of data the database goes read-only. Each lobby stores its ticks,
+  orders and fills; deleting a lobby removes them.
+- *Pausing.* Supabase pauses a project after a week of low activity. Open the project in the
+  Supabase dashboard a few days before an event, and restore it there if it was paused.
+- *Bandwidth.* 10 GB of bandwidth a month. A dataset download is about 2 MB.
+
+**Vercel Hobby**
+- Free for non-commercial use. Server functions may run up to 5 minutes, which leaves room for an
+  admin action to wait while the engine wakes up.
+
 ## Running an event
 
+0. A few days before, open the Supabase project so it isn't paused. Shortly before the event, open
+   the home page as an admin to wake the engine.
 1. Admin (home page) creates groups and shares each group's invite link.
 2. Admin creates a lobby: goods, tick length, K, duration, N groups, optional seed.
 3. Admin enters groups and clicks **Build dataset & publish**. Groups can now backtest.

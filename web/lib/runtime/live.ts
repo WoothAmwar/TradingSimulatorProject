@@ -1,4 +1,4 @@
-import { wsUrl } from "@/lib/feed";
+import { KEEPALIVE, KEEPALIVE_MS, wsUrl } from "@/lib/feed";
 import type { RuntimeWorker } from "./sandbox";
 
 export type LiveEvent =
@@ -31,6 +31,10 @@ export class LiveSession {
   private busySince: number | null = null;
   private ws: WebSocket | null = null;
   private stopped = false;
+  // Bots already send orders every tick; this covers paused lobbies (see KEEPALIVE_MS).
+  private keepalive = setInterval(() => {
+    if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(KEEPALIVE);
+  }, KEEPALIVE_MS);
 
   constructor(
     private opts: {
@@ -59,6 +63,7 @@ export class LiveSession {
         if (this.stopped) return;
         if (FINAL_CODES.has(ev.code)) {
           this.stopped = true;
+          clearInterval(this.keepalive);
           onEvent({ type: "closed", reason: ev.reason || `connection closed (${ev.code})` });
           return;
         }
@@ -70,6 +75,7 @@ export class LiveSession {
 
   stop() {
     this.stopped = true;
+    clearInterval(this.keepalive);
     this.ws?.close(1000);
   }
 

@@ -115,5 +115,5 @@ async function AdminSection() {
     allowlist: (allowlist.data ?? []).map((a) => a.email),
   };
 
-  return <AdminPanel data={data} />;
+  return <AdminPanel data={data} engineUrl={ENGINE_URL} />;
 }
