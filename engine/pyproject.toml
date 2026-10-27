@@ -1,0 +1,35 @@
+[project]
+name = "trading-engine"
+version = "0.1.0"
+description = "Seeded market simulator and live exchange engine for the ACM trading competition"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    # Pinned exactly: Generator distribution methods are only reproducible within a version,
+    # and the live market must match previously published datasets.
+    "numpy==2.5.4",
+    "fastapi",
+    "uvicorn[standard]",
+    "httpx",
+    "pyjwt[crypto]",
+]
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "hypothesis",
+    "ruff",
+]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]

@@ -1,0 +1,27 @@
+# Render Blueprint for the exchange engine. The Next.js app is deployed separately on Vercel.
+services:
+  - type: web
+    name: trading-engine
+    runtime: docker
+    region: ohio # next to the Supabase project (us-east-2)
+    # Paid, always-on: free instances spin down when idle, which would kill a running lobby.
+    plan: 0.5c-512mb
+    numInstances: 1 # one process owns each lobby's tick loop (enforced by a Supabase lease)
+    dockerfilePath: ./engine/Dockerfile
+    dockerContext: ./engine
+    buildFilter:
+      paths:
+        - engine/**
+        - render.yaml
+    healthCheckPath: /health
+    # Deploys drop every WebSocket; deploy deliberately, never during a live lobby.
+    autoDeployTrigger: "off"
+    # Time to flush pending writes and release lobby leases on shutdown.
+    maxShutdownDelaySeconds: 60
+    envVars:
+      - key: SUPABASE_URL
+        value: https://cjbtwjkotakbtxmnhqhq.supabase.co
+      - key: SUPABASE_SECRET_KEY # Supabase dashboard > Settings > API Keys > secret key
+        sync: false
+      - key: ALLOWED_ORIGINS # e.g. https://your-app.vercel.app,http://localhost:3000
+        sync: false

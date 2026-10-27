@@ -6,7 +6,7 @@ UChicago ACM wants a trading competition for a club event, modeled on IMC Prospe
 The repo has only `README.txt` (the original prompt), `.mcp.json` (Supabase MCP), and a `.gitignore`. Nothing is built yet.
 
 **Decisions already made with you:**
-- **Hosting.** The Next.js UI runs on Vercel. A small, always-on Python service (FastAPI) runs the exchange. Vercel functions can't hold a single shared order book in memory.
+- **Hosting.** The Next.js UI runs on Vercel. A small, always-on Python service (FastAPI) on **Render** runs the exchange. Vercel functions can't hold a single shared order book in memory.
 - **Matching.** The market advances in discrete ticks. Within a tick, orders are processed in a random order derived from seed + tick, with price-time priority. Resting orders carry over to later ticks.
 - **Local data.** The dataset is ticks `0…K−1` of the lobby's seed, and the live run continues from tick `K`. Knowing past ticks doesn't let anyone predict future ones, as long as the seed is a secret 128-bit value and the generator code never ships to the browser.
 - **Accounts.** One live bot per group. Any member can mark one of the group's saved submissions as active and run it.
@@ -23,7 +23,7 @@ Browser ─ Next.js 16 / React 19 on Vercel
   bot runtime       sandboxed iframe → Web Worker (Pyodide | clang-wasm | Yaegi-wasm | CheerpJ)
        │  wss (public feed)  /  wss (auth'd trading, Supabase JWT)
        ▼
-Engine ─ Python 3.12 FastAPI on Fly.io (1 always-on machine; only one server processes orders)
+Engine ─ Python 3.12 FastAPI, a Render Web Service (1 paid always-on instance; only one server processes orders)
   tick loop → generator → matching → accounts → broadcast
        │ asyncpg (service role)
        ▼
@@ -36,7 +36,8 @@ Supabase ─ Postgres (RLS) + Auth (Google, GitHub only) + Storage (datasets)
   - `rng.py`, `models/ou.py`, `models/gbm_garch_jump.py`, `flow.py` (bot order flow)
   - `book.py`, `matching.py`, `accounts.py`, `lobby.py` (tick driver)
 - `engine/server/`: `app.py`, `ws.py`, `auth.py` (JWKS verification), `persistence.py`, `admin.py`.
-- `engine/scripts/make_dataset.py`, `engine/tests/`, `Dockerfile`, `fly.toml`, `pyproject.toml`.
+- `engine/scripts/make_dataset.py`, `engine/tests/`, `Dockerfile`, `pyproject.toml`.
+- `render.yaml` at the repo root: the Render Blueprint, with `rootDir: engine`.
 - `sdk/{python,c,cpp,go,java}/`: starter template and harness for each language.
 - `supabase/migrations/*.sql`: the schema source of truth, applied through the Supabase MCP.
 - Fix `.gitignore`: it currently ignores `*.json` and `*.txt`, which would drop `package.json`, `tsconfig.json`, and similar files. Replace it with standard Node, Next.js, and Python ignores plus `.env*`, and keep ignoring `.mcp.json` explicitly.
@@ -179,18 +180,24 @@ Prices are integer ticks and quantities are integers.
 **Other details:**
 - Persistence goes through `asyncpg`, writing in batches.
 - A CORS and origin allowlist limits connections to the Vercel domains.
-- Deploy with a Dockerfile to Fly.io: one machine, `min_machines_running=1`, auto-stop turned off. Railway would work the same way.
+**Deploying on Render:**
+- `render.yaml` defines one `type: web` service with `runtime: docker`, `rootDir: engine`, and `healthCheckPath: /health`.
+- Secrets use `sync: false`: `SUPABASE_DB_URL`, `SUPABASE_URL`, `ALLOWED_ORIGINS`.
+- Use a paid, always-on instance type. Free instances shut down when idle, which would kill a running lobby.
+- Once the Render plugin is installed and authenticated, use it to create the service, set environment variables, and watch deploys and logs.
+- **Single runner, enforced in Postgres.** A Render deploy briefly runs the old and new instances side by side. Each lobby's tick loop therefore holds a Postgres advisory lock on that lobby. A new instance waits for the lock, then resumes using crash recovery, so no tick is processed twice.
+- **No deploys during a live lobby.** Turn off auto-deploy for the event; a deploy also drops every WebSocket. Clients reconnect with exponential backoff and authenticate again.
 
 ## Phases
 0. **Prerequisites.**
    - Authenticate the Supabase MCP (run `/mcp`; it's currently unauthenticated).
    - Create the Google and GitHub OAuth apps.
-   - Set up Fly.io and Vercel accounts.
+   - Set up Render and Vercel accounts. Install the Render plugin yourself by typing `/plugin install render@claude-plugins-official` at the prompt.
    - Fix `.gitignore` and scaffold the monorepo.
 1. **`market_core`.** RNG, both price models, bot flow, order book and matching, accounts, `make_dataset.py`, and tests.
 2. **Supabase.** Create the project, apply the migrations (schema, RLS, RPCs, Storage bucket), clear the security warnings from `get_advisors`, and generate TS types.
 3. **Web.** Auth, `/` skeleton and admin panel, invites and `/join`, group pages, editor and submissions.
-4. **Engine service.** Tick loop, both WebSocket endpoints, JWT auth, persistence, and recovery. Deploy, then connect the live `/` view.
+4. **Engine service.** Tick loop, both WebSocket endpoints, JWT auth, persistence, recovery, and the lobby lock. Deploy to Render, then connect the live `/` view.
 5. **Runtimes.** Python end to end first (backtest and live). Then C/C++, Go, and Java.
 6. **Polish.** Leaderboard, end-of-lobby fair-value reveal, SDK docs page, load test, dry run.
 
@@ -213,7 +220,9 @@ Prices are integer ticks and quantities are integers.
 - Confirm a maker order from group A fills against a taker order from group B, with both sides recorded.
 - Repeat with each language's starter template.
 
-**Load:** a headless Python client that simulates N = 20 groups at 500 ms ticks. Check that tick-processing latency stays well under the deadline.
+**Load:** a headless Python client that simulates N = 20 groups at 500 ms ticks against the deployed Render service. Check that tick-processing latency stays well under the deadline.
+
+**Redeploy drill:** trigger a Render deploy during a test lobby. Confirm that only one instance holds the lobby lock, the tick sequence has no gaps or duplicates, and clients reconnect on their own.
 
 ## Known limitations
 - Bots run on the client, so the engine can't prove which code a group is actually running. It enforces every market rule, and submissions are logged for audit.

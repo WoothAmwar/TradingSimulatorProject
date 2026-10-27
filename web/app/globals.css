@@ -1,0 +1,61 @@
+@import "tailwindcss";
+
+:root {
+  --background: #0b0e14;
+  --panel: #121722;
+  --panel-2: #171d2a;
+  --border: #232b3b;
+  --foreground: #e6e9ef;
+  --muted: #8b93a7;
+  --accent: #f0b429;
+  --bid: #22c55e;
+  --ask: #ef4444;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-panel: var(--panel);
+  --color-panel-2: var(--panel-2);
+  --color-border: var(--border);
+  --color-foreground: var(--foreground);
+  --color-muted: var(--muted);
+  --color-accent: var(--accent);
+  --color-bid: var(--bid);
+  --color-ask: var(--ask);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+}
+
+.num {
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+@layer components {
+  .panel {
+    @apply rounded-lg border border-border bg-panel;
+  }
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-md border border-border bg-panel-2 px-3 py-1.5 text-sm font-medium transition-colors hover:border-muted disabled:cursor-not-allowed disabled:opacity-50;
+  }
+  .btn-primary {
+    @apply border-accent bg-accent text-black hover:bg-accent/90;
+  }
+  .btn-danger {
+    @apply border-ask/60 text-ask hover:border-ask;
+  }
+  .input {
+    @apply w-full rounded-md border border-border bg-background px-2.5 py-1.5 text-sm outline-none focus:border-accent;
+  }
+  .label {
+    @apply mb-1 block text-xs font-medium uppercase tracking-wide text-muted;
+  }
+  .badge {
+    @apply inline-flex items-center rounded px-1.5 py-0.5 text-xs font-medium;
+  }
+}
