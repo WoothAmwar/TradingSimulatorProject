@@ -29,6 +29,14 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
           </div>
         </header>
         <main className="mx-auto w-full max-w-7xl flex-1 px-4 py-6">{children}</main>
+        <footer className="border-t border-border">
+          <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-2 px-4 py-4 text-xs text-muted">
+            <span>A practice market for UChicago ACM&apos;s algorithmic trading competitions.</span>
+            <Link href="/privacy" className="hover:text-foreground">
+              Privacy Policy
+            </Link>
+          </div>
+        </footer>
       </body>
     </html>
   );
