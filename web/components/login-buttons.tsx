@@ -4,7 +4,7 @@ import { useSearchParams } from "next/navigation";
 import { useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 
-type Provider = "google" | "github";
+type Provider = "google"; // | "github";
 
 export function LoginButtons() {
   const params = useSearchParams();
@@ -31,9 +31,9 @@ export function LoginButtons() {
       <button className="btn w-full py-2" disabled={pending !== null} onClick={() => signIn("google")}>
         {pending === "google" ? "Redirecting…" : "Continue with Google"}
       </button>
-      <button className="btn w-full py-2" disabled={pending !== null} onClick={() => signIn("github")}>
+      {/* <button className="btn w-full py-2" disabled={pending !== null} onClick={() => signIn("github")}>
         {pending === "github" ? "Redirecting…" : "Continue with GitHub"}
-      </button>
+      </button> */}
       {(error || params.get("error")) && (
         <p className="text-sm text-ask">{error ?? "Sign-in failed. Please try again."}</p>
       )}

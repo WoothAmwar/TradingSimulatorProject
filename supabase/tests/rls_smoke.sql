@@ -9,6 +9,8 @@ declare
   ga uuid;
   gb uuid;
   lobby uuid;
+  open_lobby uuid;
+  files text[];
   token_a text;
   token_b text;
   n int;
@@ -29,7 +31,9 @@ begin
     (ga, alice, 'print("a")'), (gb, bob, 'print("b")');
   insert into public.lobbies (name, status) values ('Draft lobby', 'draft') returning id into lobby;
   insert into public.lobby_secrets (lobby_id, model_config) values (lobby, '{}');
-  insert into public.lobbies (name, status) values ('Open lobby', 'scheduled');
+  insert into public.lobbies (name, status) values ('Open lobby', 'scheduled') returning id into open_lobby;
+  files := array[lobby || '/manifest.json', open_lobby || '/manifest.json'];
+  insert into storage.objects (bucket_id, name) select 'datasets', unnest(files);
 
   -- Alice ------------------------------------------------------------------------------------
   perform set_config('role', 'authenticated', true);
@@ -40,9 +44,10 @@ begin
   select count(*) into n from public.group_members;          r := r || ' alice.members=' || n;   -- 1
   select count(*) into n from public.group_invites;          r := r || ' alice.invites=' || n;   -- 0
   select count(*) into n from public.lobby_secrets;          r := r || ' alice.secrets=' || n;   -- 0
-  select count(*) into n from public.lobbies;                r := r || ' alice.lobbies=' || n;   -- 1
+  select count(*) into n from public.lobbies where id in (lobby, open_lobby); r := r || ' alice.lobbies=' || n;   -- 1
   select count(*) into n from public.get_group_roster(gb);   r := r || ' alice.rosterB=' || n;   -- 0
   select count(*) into n from public.get_group_roster(ga);   r := r || ' alice.rosterA=' || n;   -- 1
+  select count(*) into n from storage.objects where name = any(files); r := r || ' alice.datasets=' || n; -- 1 (not the draft's)
   begin
     insert into public.submissions (group_id, source) values (gb, 'x');
     r := r || ' alice.insertB=ALLOWED';
@@ -79,15 +84,17 @@ begin
 
   -- Admin ------------------------------------------------------------------------------------
   perform set_config('request.jwt.claims', json_build_object('sub', admin, 'role', 'authenticated')::text, true);
-  select count(*) into n from public.lobby_secrets;          r := r || ' admin.secrets=' || n;   -- 1
-  select count(*) into n from public.lobbies;                r := r || ' admin.lobbies=' || n;   -- 2
-  select count(*) into n from public.group_invites;          r := r || ' admin.invites=' || n;   -- 2
+  select count(*) into n from public.lobby_secrets where lobby_id = lobby; r := r || ' admin.secrets=' || n;   -- 1
+  select count(*) into n from public.lobbies where id in (lobby, open_lobby); r := r || ' admin.lobbies=' || n;   -- 2
+  select count(*) into n from public.group_invites where group_id in (ga, gb); r := r || ' admin.invites=' || n;   -- 2
+  select count(*) into n from storage.objects where name = any(files); r := r || ' admin.datasets=' || n; -- 2
 
   -- Anonymous --------------------------------------------------------------------------------
   perform set_config('role', 'anon', true);
   perform set_config('request.jwt.claims', '{"role":"anon"}', true);
-  select count(*) into n from public.groups;                 r := r || ' anon.groups=' || n;     -- 2
-  select count(*) into n from public.lobbies;                r := r || ' anon.lobbies=' || n;    -- 1
+  select count(*) into n from public.groups where id in (ga, gb); r := r || ' anon.groups=' || n;     -- 2
+  select count(*) into n from public.lobbies where id in (lobby, open_lobby); r := r || ' anon.lobbies=' || n;    -- 1
+  select count(*) into n from storage.objects where name = any(files); r := r || ' anon.datasets=' || n; -- 0
   begin
     select count(*) into n from public.submissions;
     r := r || ' anon.subs=ALLOWED';

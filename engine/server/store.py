@@ -45,9 +45,12 @@ class Store(Protocol):
 
 class RestStore:
     def __init__(self, supabase_url: str, secret_key: str) -> None:
-        # The gateway turns an sb_secret_ apikey into service-role authorization.
+        # Send the key as both apikey and Bearer: with only apikey, PostgREST can run the request
+        # as anon, and anon has no grants on these tables (401 instead of data).
         self._http = httpx.AsyncClient(
-            base_url=supabase_url, headers={"apikey": secret_key}, timeout=15
+            base_url=supabase_url,
+            headers={"apikey": secret_key, "Authorization": f"Bearer {secret_key}"},
+            timeout=15,
         )
 
     async def close(self) -> None:

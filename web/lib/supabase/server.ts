@@ -1,9 +1,14 @@
 import { createServerClient } from "@supabase/ssr";
+import { io } from "next/cache";
 import { cookies } from "next/headers";
 import type { Database } from "./database.types";
 
 export async function createClient() {
   const cookieStore = await cookies();
+  // Partial prefetching prerenders session content with the cookies available, but Supabase
+  // compares the session's expiry with Date.now() on every call. Keep it out of the prerender;
+  // in requests, route handlers and server actions io() resolves immediately.
+  await io();
 
   return createServerClient<Database>(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
