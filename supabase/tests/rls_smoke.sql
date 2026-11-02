@@ -14,6 +14,9 @@ declare
   round_draft uuid;   -- static round not published yet
   sub_a uuid;         -- team A's code for round_open
   sub_b uuid;         -- team B's code for round_open
+  live_a uuid;        -- team A's live code
+  done_lobby uuid;
+  scored_lobby uuid;  -- results stored, status not yet updated (the engine writes them in that order)
   files text[];
   token_a text;
   token_b text;
@@ -31,8 +34,9 @@ begin
   select token into token_a from public.group_invites where group_id = ga;
   select token into token_b from public.group_invites where group_id = gb;
   insert into public.group_members (group_id, user_id) values (ga, alice), (gb, bob);
-  insert into public.submissions (group_id, author_id, source) values
-    (ga, alice, 'print("a")'), (gb, bob, 'print("b")');
+  insert into public.submissions (group_id, author_id, source) values (ga, alice, 'print("a")')
+    returning id into live_a;
+  insert into public.submissions (group_id, author_id, source) values (gb, bob, 'print("b")');
   insert into public.lobbies (name, status) values ('Draft lobby', 'draft') returning id into lobby;
   insert into public.lobby_secrets (lobby_id, model_config) values (lobby, '{}');
   insert into public.lobbies (name, status) values ('Open lobby', 'scheduled') returning id into open_lobby;
@@ -45,7 +49,11 @@ begin
     values (ga, alice, 'a', round_open) returning id into sub_a;
   insert into public.submissions (group_id, author_id, source, lobby_id)
     values (gb, bob, 'b', round_open) returning id into sub_b;
-  insert into public.lobby_entries (lobby_id, group_id) values (open_lobby, ga);
+  insert into public.lobbies (name, status) values ('Done lobby', 'finished') returning id into done_lobby;
+  insert into public.lobbies (name, status) values ('Scored lobby', 'running') returning id into scored_lobby;
+  insert into public.lobby_entries (lobby_id, group_id) values
+    (open_lobby, ga), (done_lobby, ga), (scored_lobby, ga);
+  insert into public.lobby_results (lobby_id, group_id, final_pnl, rank) values (scored_lobby, ga, 0, 1);
   files := array[lobby || '/manifest.json', open_lobby || '/manifest.json'];
   insert into storage.objects (bucket_id, name) select 'datasets', unnest(files);
 
@@ -99,6 +107,18 @@ begin
     perform public.set_active_submission(open_lobby, sub_a);
     r := r || ' alice.activateRoundCode=ALLOWED';
   exception when others then r := r || ' alice.activateRoundCode=denied'; end;
+  begin
+    perform public.set_active_submission(done_lobby, live_a);
+    r := r || ' alice.activateFinished=ALLOWED';
+  exception when others then r := r || ' alice.activateFinished=denied'; end;
+  begin
+    perform public.set_active_submission(scored_lobby, live_a);
+    r := r || ' alice.activateScored=ALLOWED';
+  exception when others then r := r || ' alice.activateScored=denied'; end;
+  begin
+    perform public.set_active_submission(open_lobby, live_a);
+    r := r || ' alice.activateOpen=ok';
+  exception when others then r := r || ' alice.activateOpen=FAILED:' || sqlerrm; end;
   begin
     update public.profiles set is_admin = true where id = alice;
     r := r || ' alice.selfPromote=ALLOWED';
