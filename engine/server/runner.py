@@ -79,6 +79,7 @@ class LobbyRunner:
         self._resume = asyncio.Event()
         self._queue: dict[str, list[dict]] = defaultdict(list)
         self._lobby_updates: dict = {}
+        self._flush_lock = asyncio.Lock()  # writer, detach and finish may flush concurrently
         self._task: asyncio.Task | None = None
         self._writer: asyncio.Task | None = None
         self._stopping = False
@@ -506,20 +507,25 @@ class LobbyRunner:
             await self._flush()
 
     async def _flush(self) -> None:
-        queue, self._queue = self._queue, defaultdict(list)
-        # order_batches first: they are what crash recovery replays.
-        for table in ("order_batches", "participant_fills", "market_snapshots", "pnl_snapshots"):
-            rows = queue.get(table)
-            if not rows:
-                continue
-            try:
-                await self.store.insert(table, rows)
-            except Exception:
-                log.exception("insert into %s failed; retrying next flush", table)
-                self._queue[table][:0] = rows
-        if self._lobby_updates:
+        async with self._flush_lock:
+            # Taken together so current_tick never covers ticks whose rows are still queued.
+            queue, self._queue = self._queue, defaultdict(list)
             updates, self._lobby_updates = self._lobby_updates, {}
-            try:
-                await self.store.update_lobby(self.lobby_id, updates)
-            except Exception:
-                log.exception("lobby update failed")
+            # order_batches first: they are what crash recovery replays.
+            for table in ("order_batches", "participant_fills", "market_snapshots", "pnl_snapshots"):
+                rows = queue.get(table)
+                if not rows:
+                    continue
+                try:
+                    await self.store.insert(table, rows)
+                except Exception:
+                    log.exception("insert into %s failed; retrying next flush", table)
+                    self._queue[table][:0] = rows
+                    if table == "order_batches" and "current_tick" in updates:
+                        # Recovery replays up to current_tick, so don't advance it past saved orders.
+                        self._lobby_updates.setdefault("current_tick", updates.pop("current_tick"))
+            if updates:
+                try:
+                    await self.store.update_lobby(self.lobby_id, updates)
+                except Exception:
+                    log.exception("lobby update failed")
