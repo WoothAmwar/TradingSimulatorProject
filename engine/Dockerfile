@@ -16,4 +16,6 @@ RUN useradd --create-home engine
 USER engine
 
 # Render injects PORT; one worker so a single process owns every lobby's tick loop.
-CMD ["sh", "-c", "exec /app/.venv/bin/uvicorn server.main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1 --proxy-headers --forwarded-allow-ips='*'"]
+# --ws-max-size: a full 300-action response is ~30 KB; uvicorn's 16 MB default lets one client
+# stall the 0.1-CPU tick loop parsing a single message.
+CMD ["sh", "-c", "exec /app/.venv/bin/uvicorn server.main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1 --proxy-headers --forwarded-allow-ips='*' --ws-max-size 262144"]

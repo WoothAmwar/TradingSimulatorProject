@@ -364,47 +364,62 @@ class LobbyRunner:
         return msg
 
     async def _send_states(self, t: int, deadline_ms: int) -> None:
-        sends = [
-            self._send(
-                trader.socket,
-                {
+        await self._send_traders(
+            {
+                gid: {
                     "type": "state",
                     "tick": t,
                     "deadline_ms": deadline_ms,
                     "state": bot_state(self.sim.driver, gid),
-                },
-            )
-            for gid, trader in list(self.traders.items())
-        ]
-        await asyncio.gather(*sends)
+                }
+                for gid in list(self.traders)
+            }
+        )
 
     async def _send_results(self, t: int, open_log: TickLog, close_log: TickLog) -> None:
         fills = open_log.fills + close_log.fills
-        for gid, trader in list(self.traders.items()):
+        messages = {}
+        for gid in list(self.traders):
             acct = self.sim.driver.exchange.accounts.get(gid)
             exchange_rejects = [
                 r.reason for r in open_log.rejects + close_log.rejects if r.owner == gid
             ]
-            await self._send(
-                trader.socket,
-                {
-                    "type": "result",
-                    "tick": t,
-                    "fills": [
-                        {
-                            "good": f.good,
-                            "price": f.price,
-                            "qty": f.qty if f.buyer == gid else -f.qty,
-                        }
-                        for f in fills
-                        if gid in (f.buyer, f.seller)
-                    ],
-                    "rejects": self._pending_rejects.get(gid, []) + exchange_rejects,
-                    "position": {g: (acct.position.get(g, 0) if acct else 0) for g in self.goods},
-                    "cash": acct.cash if acct else 0,
-                    "pnl": self._pnl(gid, self.marks),
-                },
-            )
+            messages[gid] = {
+                "type": "result",
+                "tick": t,
+                "fills": [
+                    {
+                        "good": f.good,
+                        "price": f.price,
+                        "qty": f.qty if f.buyer == gid else -f.qty,
+                    }
+                    for f in fills
+                    if gid in (f.buyer, f.seller)
+                ],
+                "rejects": self._pending_rejects.get(gid, []) + exchange_rejects,
+                "position": {g: (acct.position.get(g, 0) if acct else 0) for g in self.goods},
+                "cash": acct.cash if acct else 0,
+                "pnl": self._pnl(gid, self.marks),
+            }
+        await self._send_traders(messages)
+
+    async def _send_traders(self, messages: dict[str, dict]) -> None:
+        """Sends concurrently, dropping traders whose socket can't keep up so they don't slow every
+        tick for everyone. A wedged socket may not take the close frame; the bot then reconnects
+        once the connection times out."""
+        targets = [(self.traders[gid], msg) for gid, msg in messages.items() if gid in self.traders]
+        sent = await asyncio.gather(*(self._send(t.socket, msg) for t, msg in targets))
+        dropped = [t for (t, _), ok in zip(targets, sent, strict=True) if not ok]
+        for trader in dropped:
+            self.remove_trader(trader)
+        await asyncio.gather(*(self._drop(t.socket) for t in dropped))
+
+    @staticmethod
+    async def _drop(ws: WebSocket) -> None:
+        try:
+            await asyncio.wait_for(ws.close(code=1011, reason="connection too slow"), timeout=1)
+        except Exception:
+            pass
 
     async def _broadcast(self, msg: dict) -> None:
         dead = []

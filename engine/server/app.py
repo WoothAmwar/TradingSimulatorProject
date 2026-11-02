@@ -124,6 +124,8 @@ def create_app(store: Store, verifier: Verifier, settings: Settings) -> FastAPI:
                     msg = await ws.receive_json()
                 except json.JSONDecodeError:
                     continue
+                if runner.traders.get(group_id) is not trader:
+                    break  # dropped as too slow, or replaced: stop accepting its orders
                 if isinstance(msg, dict):
                     notice = runner.handle_trader_message(group_id, msg)
                     if notice is not None:
