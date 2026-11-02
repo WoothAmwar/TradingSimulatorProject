@@ -137,6 +137,16 @@ begin
   exception when others then r := r || ' alice.createGroup=denied'; end;
   delete from public.group_members where user_id = alice;
   get diagnostics n = row_count;                             r := r || ' alice.leave=' || n;     -- 0
+  begin
+    delete from public.submissions where id = live_a;  -- active in open_lobby (activateOpen)
+    r := r || ' alice.delActive=ALLOWED';
+  exception when others then r := r || ' alice.delActive=denied'; end;
+  begin
+    delete from public.submissions where id = sub_a;   -- behind alice.score
+    r := r || ' alice.delScored=ALLOWED';
+  exception when others then r := r || ' alice.delScored=denied'; end;
+  delete from public.submissions where group_id = ga and source = 'ok';
+  get diagnostics n = row_count;                             r := r || ' alice.delUnused=' || n; -- 2 (insertA, codeForRound)
 
   -- Carol joins team B with its invite token ------------------------------------------------
   perform set_config('request.jwt.claims', json_build_object('sub', carol, 'role', 'authenticated')::text, true);
@@ -157,6 +167,13 @@ begin
   select count(*) into n from public.group_invites where group_id in (ga, gb); r := r || ' admin.invites=' || n;   -- 2
   select count(*) into n from storage.objects where name = any(files); r := r || ' admin.datasets=' || n; -- 2
   select count(*) into n from public.round_attempts where lobby_id = round_open; r := r || ' admin.attempts=' || n; -- 3
+  begin
+    delete from public.groups where id = ga;  -- cascades to its entries, attempts and submissions
+    raise sqlstate 'ZZ001';  -- undo it so later checks still see team A
+  exception
+    when sqlstate 'ZZ001' then r := r || ' admin.deleteGroup=ok';
+    when others then r := r || ' admin.deleteGroup=FAILED:' || sqlerrm;
+  end;
 
   -- Anonymous --------------------------------------------------------------------------------
   perform set_config('role', 'anon', true);
