@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { saveSubmission, submitRoundScore } from "@/app/actions/group";
 import { STATIC_PRESETS, STATUS_STYLES, statusLabel, type StaticPreset } from "@/lib/lobby";
-import { downloadDatasetFile, runBacktest, type BacktestResult } from "@/lib/runtime/backtest";
+import { downloadDatasetFile, loadPricePath, runBacktest, type BacktestResult } from "@/lib/runtime/backtest";
 import { startBot } from "@/lib/runtime/bots";
 import type { RuntimeWorker } from "@/lib/runtime/sandbox";
 import { isLanguage, LANGUAGES, templateFor, type CodeTarget, type Language } from "@/lib/templates";
@@ -72,6 +72,8 @@ export function CodeWorkspace({
   const [savedId, setSavedId] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [scored, setScored] = useState<{ score: number; rank: number } | null>(null);
+  // Price charts of live datasets, by lobby id: the points, or an error message.
+  const [pricePaths, setPricePaths] = useState<Record<string, [number, number][] | string>>({});
   const [saving, startSave] = useTransition();
   const worker = useRef<RuntimeWorker | null>(null);
 
@@ -87,6 +89,14 @@ export function CodeWorkspace({
   }, [draft, draftKey]);
 
   useEffect(() => () => worker.current?.terminate(), []);
+
+  useEffect(() => {
+    if (round || !lobbyId || pricePaths[lobbyId]) return;
+    loadPricePath(lobbyId).then(
+      (points) => setPricePaths((p) => ({ ...p, [lobbyId]: points })),
+      (e: Error) => setPricePaths((p) => ({ ...p, [lobbyId]: e.message })),
+    );
+  }, [round, lobbyId, pricePaths]);
 
   const log = (text: string | string[], kind: ConsoleLine["kind"] = "log") =>
     setLines((prev) => appendLines(prev, Array.isArray(text) ? text : [text], kind));
@@ -130,14 +140,13 @@ export function CodeWorkspace({
       worker.current = started.worker;
       log(started.logs);
       setStatus("Running backtest…");
-      const t0 = performance.now();
-      const { result, logs } = await runBacktest(started.worker, dataLobby, limit, (n, l) => {
+      const { result, logs, seconds } = await runBacktest(started.worker, dataLobby, limit, (n, l) => {
         setProgress(n);
         log(l);
       });
       log(logs);
       for (const e of result.errors) log(`tick ${e.tick}:\n${e.error}`, "error");
-      log(`Backtest finished: ${result.ticks} ticks in ${((performance.now() - t0) / 1000).toFixed(1)}s`, "info");
+      log(`Backtest finished: ${result.ticks} ticks in ${seconds.toFixed(1)}s`, "info");
       setResult(result);
       return result;
     } catch (e) {
@@ -344,6 +353,7 @@ export function CodeWorkspace({
                   onChange={(e) => setMaxTicks(e.target.value.replace(/\D/g, ""))}
                 />
               </div>
+              {!round && <PriceChart path={pricePaths[lobbyId]} />}
               <div className="flex flex-wrap gap-2">
                 <button className="btn btn-primary" onClick={backtest} disabled={busy}>
                   {running && !submitting ? "Running…" : "Run backtest"}
@@ -410,6 +420,21 @@ export function CodeWorkspace({
           <ConsoleView lines={lines} />
         </section>
       </div>
+    </div>
+  );
+}
+
+/** The published prices of the selected live dataset. */
+function PriceChart({ path }: { path: [number, number][] | string | undefined }) {
+  if (typeof path === "string") return <p className="text-xs text-muted">{path}</p>;
+  if (!path) return <div className="h-[150px] animate-pulse rounded bg-panel-2" />;
+  return (
+    <div>
+      <LineChart points={path} color="#f0b429" height={150} />
+      <p className="mt-1 text-xs text-muted">
+        The price at each of the {path.length.toLocaleString()} published ticks. The live round carries on from the
+        last one.
+      </p>
     </div>
   );
 }

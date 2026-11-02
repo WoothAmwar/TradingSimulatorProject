@@ -12,7 +12,7 @@ from market_core.static_rounds import build_static_dataset
 
 
 def max_profit(prices: list[int]) -> int:
-    """The reference LeetCode 121 solution the round is designed around."""
+    """The reference LeetCode 121 solution: the best single buy-then-sell."""
     b = 0
     s = 0
     profit = 0
@@ -59,7 +59,7 @@ def test_unknown_preset_and_bad_length(tmp_path):
         build_static_dataset("BEST_TIME", 5, 1, tmp_path)
 
 
-def test_best_optimal_trades_score_exactly_max_profit(tmp_path):
+def test_best_time_single_trade_scores_its_profit(tmp_path):
     manifest, preview = build_static_dataset("BEST_TIME", 500, 7, tmp_path)
     _, events = load(tmp_path)
     prices = [e["prices"]["STOCK"] for e in events]
@@ -85,6 +85,30 @@ def test_best_optimal_trades_score_exactly_max_profit(tmp_path):
     assert not any(s["rejects"] for s in summaries)
 
 
+def test_best_time_best_score_is_every_rise(tmp_path):
+    """Trading is unlimited, so the best score is LeetCode 122: own the unit through every rise."""
+    manifest, _ = build_static_dataset("BEST_TIME", 500, 7, tmp_path)
+    _, events = load(tmp_path)
+    prices = [e["prices"]["STOCK"] for e in events]
+
+    def trader(state):
+        t, held = state["tick"], state["position"]["STOCK"]
+        price = state["order_depths"]["STOCK"]["asks"][0][0]
+        rises = t + 1 < len(prices) and prices[t + 1] > price
+        if rises and not held:
+            return {"orders": [{"good": "STOCK", "price": price, "qty": 1}]}
+        if held and not rises:
+            return {"orders": [{"good": "STOCK", "price": price, "qty": -1}]}
+        return None
+
+    bt = make_backtest(manifest, events)
+    summaries = bt.run(trader)
+    best = sum(max(0, prices[t + 1] - prices[t]) for t in range(len(prices) - 1))
+    assert bt.score() == best > max_profit(prices)
+    assert sum(len(s["fills"]) for s in summaries) > 2
+    assert not any(s["rejects"] for s in summaries)
+
+
 def test_series_rules():
     manifest = {
         "kind": "series",
@@ -92,7 +116,6 @@ def test_series_rules():
             "goods": ["STOCK"],
             "position_limits": {"STOCK": 1},
             "min_positions": {"STOCK": 0},
-            "max_trades": 2,
         },
     }
     events = [{"t": t, "prices": {"STOCK": p}} for t, p in enumerate([10, 8, 12, 15])]
@@ -118,10 +141,10 @@ def test_series_rules():
     assert r["fills"][0]["qty"] == -1 and r["position"] == {"STOCK": 0}
 
     bt.open_next()
-    r = bt.close(orders((15, 1)))
-    assert r["rejects"] == ["no trades left this round"]
+    r = bt.close(orders((15, 1)))  # trading again is fine: there is no limit on trades
+    assert r["fills"] == [{"good": "STOCK", "price": 15, "qty": 1}] and not r["rejects"]
     assert bt.open_next() is None
-    assert bt.score() == 4
+    assert bt.score() == 4  # +4 on the first round trip; the unit bought at 15 is worth 15
 
 
 def test_flat_mean_market_maker_profits_at_the_mean_mark(tmp_path):

@@ -13,7 +13,7 @@ export const STATIC_PRESETS = {
     good: "STOCK",
     ticks: 500,
     files: ["prices.csv"],
-    description: "One price per tick. Buy one unit, then sell it once, at the best times you can.",
+    description: "One price per tick. Own at most one unit, and buy and sell it as often as you like.",
   },
   FLAT_MEAN: {
     name: "Steady average",
@@ -42,7 +42,6 @@ export type PublicConfig = {
     maker_fee?: number;
     taker_fee?: number;
     min_positions?: Record<string, number>;
-    max_trades?: number;
   };
   /** Static rounds only. */
   preset?: StaticPreset;

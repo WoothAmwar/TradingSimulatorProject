@@ -3,9 +3,9 @@
 A static round has no live part. Its whole dataset is public, every group runs its code against
 it in the browser, and that run's score is the group's result for the round. Presets:
 
-  BEST_TIME  one price per tick for a single good. Buy one unit once, sell it once later, no short
-             selling (LeetCode 121), so the best score is the largest rise from a tick to a later
-             one. Replayed by ``series.SeriesBacktest``.
+  BEST_TIME  one price per tick for a single good. Own at most one unit and never owe one, but buy
+             and sell as often as you like (LeetCode 122), so the best score is the sum of every
+             rise from one tick to the next. Replayed by ``series.SeriesBacktest``.
   FLAT_MEAN  an order book around a constant mean. The bot market maker quotes wide and noise
              traders buy and sell around the mean, so quoting inside the spread earns it. Scored
              with positions marked at the mean. Replayed by ``backtest.Backtest``.
@@ -77,7 +77,6 @@ def _best_time(ticks: int, seed: int, out_dir: Path) -> tuple[dict, dict]:
             "goods": [good],
             "position_limits": {good: 1},
             "min_positions": {good: 0},
-            "max_trades": 2,
         },
         "files": {name: hashlib.sha256(data).hexdigest() for name, data in files.items()},
     }

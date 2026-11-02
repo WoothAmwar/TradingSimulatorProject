@@ -43,15 +43,9 @@ function simulate(prices: number[]) {
   });
 }
 
-/** The best possible score: the answer to LeetCode 121 on these prices. */
+/** The best possible score: own the unit through every rise (LeetCode 122). */
 function best(prices: number[]) {
-  let low = 0;
-  let result = { profit: 0, buy: 0, sell: 0 };
-  prices.forEach((p, i) => {
-    if (p < prices[low]) low = i;
-    else if (p - prices[low] > result.profit) result = { profit: p - prices[low], buy: low, sell: i };
-  });
-  return result;
+  return prices.slice(1).reduce((sum, p, i) => sum + Math.max(0, p - prices[i]), 0);
 }
 
 export function BestTimeDemo() {
@@ -109,7 +103,7 @@ export function BestTimeDemo() {
             {!cur && "Press Start: run(state) is called once for every tick."}
             {cur && !done && `Score so far: ${cur.score}.`}
             {done &&
-              `The template scored ${cur!.score}. The best possible was ${top.profit}: buy at tick ${top.buy}, sell at tick ${top.sell}.`}
+              `The template scored ${cur!.score} with one trade. The best possible was ${top}: own the unit through every rise and sell before every fall.`}
           </p>
         </div>
         <pre className="num h-fit overflow-x-auto rounded-md border border-border bg-background py-2 text-xs leading-relaxed">

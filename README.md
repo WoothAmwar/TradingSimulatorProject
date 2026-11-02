@@ -56,9 +56,9 @@ Static rounds run alongside the live lobby. A static round is a lobby with `kind
 market is generated once by the engine, published, and never runs live.
 
 - **Presets** (`engine/market_core/static_rounds.py`):
-  - `BEST_TIME` has one price per tick for one good. You buy one unit once and sell it once, with no
-    short selling. These are LeetCode 121's rules, so the best possible score is exactly that
-    problem's answer for the published prices. It is replayed by `market_core/series.py`, which
+  - `BEST_TIME` has one price per tick for one good. You may own at most one unit and never owe
+    one, but trade as often as you like: LeetCode 122's rules, so the best possible score is the sum
+    of every rise in the published prices. It is replayed by `market_core/series.py`, which
     also gives bots the whole price path as `state.prices` (C/C++: `s.prices`), since it is public.
   - `FLAT_MEAN` is an order book around a constant mean. The bot maker quotes ±4 and noise traders
     buy and sell around the mean, so quoting inside the spread earns it. Positions are scored at the

@@ -163,7 +163,7 @@ void trader_run(const State *s, Orders *out) {
 /** Starter code for static rounds. */
 export const STATIC_TEMPLATES: Record<StaticPreset, Record<Language, string>> = {
   BEST_TIME: {
-    python: `"""Static round: best time to buy and sell. Buy one unit once, then sell it once.
+    python: `"""Static round: best time to buy and sell. Own at most one unit; trade as often as you like.
 
 ${PY_STATE}
 ${pyRow(PY_PRICES_FIELD)}
@@ -173,7 +173,7 @@ from trader_sdk import buy, sell
 
 class Trader:
     def __init__(self):
-        self.sold = False  # remembered between ticks
+        self.sold = False  # remembered between ticks; this starter trades only once
 
     def is_highest_from_now(self, prices, tick):
         """Helper: True if no later tick has a higher price."""
@@ -190,7 +190,7 @@ class Trader:
 `,
     cpp: `#include "trader.hpp"
 
-// Static round: best time to buy and sell. Buy one unit once, then sell it once.
+// Static round: best time to buy and sell. Own at most one unit; trade as often as you like.
 //
 ${CPP_STATE}
 //   s.prices     vector<int>     best-time rounds: every tick's price, past and future
@@ -221,7 +221,7 @@ public:
 `,
     c: `#include "trader.h"
 
-/* Static round: best time to buy and sell. Buy one unit once, then sell it once. */
+/* Static round: best time to buy and sell. Own at most one unit; trade as often as you like. */
 
 ${C_STATE.replace(" */", "")}
  *   s->prices[i]    int        best-time rounds: every tick's price (i < s->num_prices) */

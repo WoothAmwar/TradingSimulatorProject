@@ -186,9 +186,10 @@ export default function AboutPage() {
 
         <h3 className="text-lg font-semibold">Best time to buy and sell</h3>
         <p className="max-w-3xl">
-          One price per tick. Buy one unit, then sell it once. <code>state.prices</code> gives every tick&apos;s
-          price, so your bot can plan ahead; each tick, it still answers buy, sell or nothing. The best possible score
-          is the answer to LeetCode 121, Best Time to Buy and Sell Stock.
+          One price per tick. You can own at most one unit, but you may buy and sell it as often as you like.{" "}
+          <code>state.prices</code> gives every tick&apos;s price, so your bot can plan ahead; each tick, it still
+          answers buy, sell or nothing. The best possible score is the sum of every price rise (LeetCode 122, Best
+          Time to Buy and Sell Stock II). The starter below trades only once.
         </p>
         <BestTimeDemo />
 

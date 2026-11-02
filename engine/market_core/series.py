@@ -2,7 +2,7 @@
 
 Some static rounds (e.g. "best time to buy and sell") publish a plain price path instead of
 an order book. A marketable order fills in full at the tick's price, subject to the round's
-position bounds and trade budget; nothing rests. The interface matches ``Backtest`` and the
+position bounds; nothing rests. The interface matches ``Backtest`` and the
 state has the live shape (the book shows the price on both sides), so every template and
 runtime works unchanged. The round is published in full, so the state also carries
 ``prices``: every tick's price, past and future::
@@ -29,12 +29,10 @@ class SeriesBacktest:
         self.max_positions: dict[str, int] = dict(rules["position_limits"])
         floors = rules.get("min_positions", {})
         self.min_positions = {g: floors.get(g, -self.max_positions[g]) for g in self.goods}
-        self.max_trades: int | None = rules.get("max_trades")
         self.owner = owner
         self.tick: int | None = None
         self.cash = 0
         self.position = {g: 0 for g in self.goods}
-        self.trades = 0
         events = list(events)
         self._events = iter(events)
         self._path = {g: tuple(int(e["prices"][g]) for e in events) for g in self.goods}
@@ -79,7 +77,6 @@ class SeriesBacktest:
             signed = action.qty * action.side
             self.position[action.good] += signed
             self.cash -= signed * price
-            self.trades += 1
             fills.append({"good": action.good, "price": price, "qty": signed})
         self._last_fills = fills
         return {
@@ -103,8 +100,6 @@ class SeriesBacktest:
             return "buy price is below this tick's price"
         if a.side != BUY and a.price > price:
             return "sell price is above this tick's price"
-        if self.max_trades is not None and self.trades >= self.max_trades:
-            return "no trades left this round"
         after = self.position[a.good] + a.side * a.qty
         floor = self.min_positions[a.good]
         if after < floor:

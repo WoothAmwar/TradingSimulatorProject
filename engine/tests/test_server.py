@@ -238,7 +238,7 @@ def test_static_round_publishes_data_and_never_runs_live():
         assert client.post(f"/admin/lobbies/{STATIC}/prepare", headers=ADMIN).status_code == 200
         lobby = store.lobbies[STATIC]
         assert lobby.status == "scheduled"
-        assert lobby.public_config["rules"]["max_trades"] == 2
+        assert lobby.public_config["rules"]["position_limits"] == {"STOCK": 1}
         assert len(lobby.public_config["preview"]["STOCK"]) == 50
         files, manifest = store.datasets[STATIC]
         assert manifest["kind"] == "series" and set(files) == {

@@ -40,6 +40,37 @@ export function loadDataset(lobbyId: string): Promise<Dataset> {
   return datasets.get(lobbyId)!;
 }
 
+/** The price at each tick in a published prices.csv: the book's middle price in live datasets, the
+ * single price in best-time rounds. Lobbies trade one good; for older two-good files, the first. */
+export function parsePricePath(csv: string): [tick: number, price: number][] {
+  const [header, ...rows] = csv.trim().split("\n");
+  const cols = header.split(",");
+  const tick = cols.indexOf("tick");
+  const good = cols.indexOf("good");
+  const price = cols.includes("mid_price") ? cols.indexOf("mid_price") : cols.indexOf("price");
+  const first = rows[0]?.split(",")[good];
+  return rows.flatMap((row) => {
+    const cells = row.split(",");
+    return cells[good] === first && cells[price] ? [[Number(cells[tick]), Number(cells[price])] as [number, number]] : [];
+  });
+}
+
+const pricePaths = new Map<string, Promise<[tick: number, price: number][]>>();
+
+/** A lobby's published prices (what bots see as state.price), for charts; cached for the session. */
+export function loadPricePath(lobbyId: string): Promise<[tick: number, price: number][]> {
+  if (!pricePaths.has(lobbyId)) {
+    const load = (async () => {
+      const { data, error } = await createClient().storage.from("datasets").download(`${lobbyId}/prices.csv`);
+      if (error) throw new Error("This lobby's prices are not available yet");
+      return parsePricePath(await data.text());
+    })();
+    load.catch(() => pricePaths.delete(lobbyId));
+    pricePaths.set(lobbyId, load);
+  }
+  return pricePaths.get(lobbyId)!;
+}
+
 /** Saves one of a lobby's published data files (e.g. prices.csv) to the user's computer. */
 export async function downloadDatasetFile(lobbyId: string, file: string): Promise<void> {
   const { data, error } = await createClient().storage.from("datasets").download(`${lobbyId}/${file}`);
@@ -67,8 +98,9 @@ export async function runBacktest(
   lobbyId: string,
   maxTicks: number,
   onProgress: (ticks: number, logs: string[]) => void,
-): Promise<{ result: BacktestResult; logs: string[] }> {
+): Promise<{ result: BacktestResult; logs: string[]; seconds: number }> {
   const [dataset, files] = await Promise.all([loadDataset(lobbyId), loadEngineFiles()]);
+  const started = performance.now();
   const events = dataset.events.slice(); // the copy is transferred to the worker
   await worker.call(
     "init_backtest",
@@ -80,5 +112,5 @@ export async function runBacktest(
     { maxTicks },
     { onProgress: (n, l) => onProgress(n as number, l) },
   );
-  return { result: JSON.parse(result), logs };
+  return { result: JSON.parse(result), logs, seconds: (performance.now() - started) / 1000 };
 }
