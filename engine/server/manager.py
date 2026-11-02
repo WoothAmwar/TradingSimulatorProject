@@ -33,12 +33,14 @@ class EngineManager:
         self.runners: dict[str, LobbyRunner] = {}
         self._locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
         self._background: set[asyncio.Task] = set()
+        self.recovering: set[str] = set()  # lobbies being rebuilt after a restart
 
     # Lifecycle ----------------------------------------------------------------------------
 
     async def startup(self) -> None:
         self._spawn(self._heartbeat())
-        self._spawn(self.recover())
+        # Awaited so `recovering` is filled before traders can connect; replays run in the background.
+        await self.recover()
 
     async def shutdown(self) -> None:
         for task in self._background:
@@ -84,9 +86,16 @@ class EngineManager:
             log.exception("could not list lobbies to recover")
             return
         for lobby_id in lobby_ids:
+            self.recovering.add(lobby_id)
             self._spawn(self._recover_one(lobby_id))
 
     async def _recover_one(self, lobby_id: str) -> None:
+        try:
+            await self._try_recover(lobby_id)
+        finally:
+            self.recovering.discard(lobby_id)
+
+    async def _try_recover(self, lobby_id: str) -> None:
         # During a deploy the old instance holds the lease until it shuts down.
         for _ in range(90):
             if await self._claim(lobby_id):
