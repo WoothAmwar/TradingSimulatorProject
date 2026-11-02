@@ -135,6 +135,8 @@ begin
     insert into public.groups (slug, name) values ('rogue', 'Rogue');
     r := r || ' alice.createGroup=ALLOWED';
   exception when others then r := r || ' alice.createGroup=denied'; end;
+  delete from public.group_members where user_id = alice;
+  get diagnostics n = row_count;                             r := r || ' alice.leave=' || n;     -- 0
 
   -- Carol joins team B with its invite token ------------------------------------------------
   perform set_config('request.jwt.claims', json_build_object('sub', carol, 'role', 'authenticated')::text, true);
