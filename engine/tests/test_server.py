@@ -281,3 +281,22 @@ def test_lobby_trades_exactly_one_good():
         r = client.post(f"/admin/lobbies/{LOBBY}/prepare", headers=ADMIN)
         assert r.status_code == 400 and "one good" in r.json()["detail"]
         assert store.lobbies[LOBBY].status == "draft"
+
+
+def test_trader_is_asked_to_retry_only_while_lobby_recovers():
+    store = make_store()
+    store.lobbies[LOBBY].status = "running"  # in the DB, but no runner on this instance yet
+    app = make_app(store)
+    client = TestClient(app)  # no lifespan, so recovery never actually runs
+
+    def close_code() -> int:
+        with client.websocket_connect(f"/ws/trade/{LOBBY}") as t1:
+            t1.send_json({"type": "auth", "token": "user:u1"})
+            with pytest.raises(WebSocketDisconnect) as exc:
+                t1.receive_json()
+        return exc.value.code
+
+    app.state.manager.recovering.add(LOBBY)
+    assert close_code() == 1013
+    app.state.manager.recovering.discard(LOBBY)  # recovery gave up or failed
+    assert close_code() == 4404

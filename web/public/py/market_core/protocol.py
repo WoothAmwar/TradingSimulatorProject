@@ -27,6 +27,11 @@ from .types import BUY, SELL, Action, Cancel, CancelAll, NewOrder, Reject
 MAX_CANCELS = 200
 
 
+def _text(value: Any) -> str:
+    """str() without NUL or lone surrogates, which can't be stored as jsonb for replay."""
+    return "".join(c for c in str(value) if c != "\x00" and not "\ud800" <= c <= "\udfff")
+
+
 def bot_state(driver: TickDriver, owner: str) -> dict:
     state = driver.public_state()
     state["goods"] = list(driver.rules.goods)
@@ -48,7 +53,7 @@ def parse_bot_response(owner: str, payload: Any) -> tuple[list[Action], list[Rej
     if cancel_all is True:
         actions.append(CancelAll(owner))
     elif isinstance(cancel_all, list):
-        actions.extend(CancelAll(owner, str(g)) for g in cancel_all)
+        actions.extend(CancelAll(owner, _text(g)) for g in cancel_all)
     elif cancel_all not in (None, False):
         rejects.append(Reject(owner, "cancel_all must be true or a list of goods"))
 
@@ -70,19 +75,25 @@ def parse_bot_response(owner: str, payload: Any) -> tuple[list[Action], list[Rej
             rejects.append(Reject(owner, "order must be an object"))
             continue
         client_id = raw.get("client_id")
-        client_id = None if client_id is None else str(client_id)[:64]
+        client_id = None if client_id is None else _text(client_id)[:64]
         qty = raw.get("qty")
         if not isinstance(qty, int) or isinstance(qty, bool) or qty == 0:
             rejects.append(Reject(owner, "qty must be a non-zero integer", client_id=client_id))
             continue
+        price = raw.get("price")
+        # Checked here too, not only by the exchange: rejected orders are still persisted for
+        # replay, and a NaN or float price would fail to serialise or replay differently.
+        if not isinstance(price, int) or isinstance(price, bool):
+            rejects.append(Reject(owner, "price must be an integer", client_id=client_id))
+            continue
         actions.append(
             NewOrder(
                 owner=owner,
-                good=str(raw.get("good")),
+                good=_text(raw.get("good")),
                 side=BUY if qty > 0 else SELL,
-                price=raw.get("price"),  # validated by the exchange
+                price=price,  # range validated by the exchange
                 qty=abs(qty),
-                tif=str(raw.get("tif", "GTC")).upper(),
+                tif=_text(raw.get("tif", "GTC")).upper(),
                 client_id=client_id,
             )
         )
