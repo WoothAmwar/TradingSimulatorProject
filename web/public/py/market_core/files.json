@@ -1,1 +1,1 @@
-["__init__.py","types.py","book.py","exchange.py","driver.py","protocol.py","backtest.py"]
+["__init__.py","types.py","book.py","exchange.py","driver.py","protocol.py","series.py","backtest.py"]

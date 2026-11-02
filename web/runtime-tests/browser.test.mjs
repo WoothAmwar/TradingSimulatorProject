@@ -8,7 +8,7 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, extname, join, resolve } from "node:path";
 import { after, before, test } from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import puppeteer from "puppeteer-core";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -25,7 +25,7 @@ let server, browser, page, origin, datasetDir;
 
 before(async () => {
   datasetDir = join(mkdtempSync(join(tmpdir(), "browser-test-")), "ds");
-  execFileSync("uv", ["run", "python", "-m", "scripts.make_dataset", "--seed", "7", "--ticks", "300", "--out", datasetDir], {
+  execFileSync("uv", ["run", "python", "-m", "scripts.make_dataset", "--seed", "7", "--ticks", "300", "--good", "STABLE", "--out", datasetDir], {
     cwd: resolve(WEB, "../engine"),
     stdio: "ignore",
   });
@@ -62,11 +62,8 @@ after(async () => {
   server?.close();
 });
 
-const PYTHON_TEMPLATE = (() => {
-  const src = readFileSync(join(WEB, "lib/templates.ts"), "utf8");
-  const body = src.slice(src.indexOf("export const TEMPLATES"));
-  return new Function(`return (${body.slice(body.indexOf("{"), body.lastIndexOf("};") + 1)});`)();
-})();
+// The starter templates live in lib/templates.ts, which Node imports with its types stripped.
+const { TEMPLATES: PYTHON_TEMPLATE } = await import(pathToFileURL(join(WEB, "lib/templates.ts")).href);
 
 test("python bot runs in a sandboxed, opaque-origin worker", { timeout: 180_000 }, async () => {
   const out = await page.evaluate(async (source) => {
@@ -88,8 +85,8 @@ test("python bot runs in a sandboxed, opaque-origin worker", { timeout: 180_000 
   assert.deepEqual(out.result, {
     cancel_all: true,
     orders: [
-      { good: "X", price: 96, qty: 5, tif: "GTC" },
-      { good: "X", price: 104, qty: -5, tif: "GTC" },
+      { good: "X", price: 96, qty: 5 },
+      { good: "X", price: 104, qty: -5 },
     ],
   });
 });

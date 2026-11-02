@@ -1,9 +1,5 @@
-import type { Language } from "@/lib/templates";
+import { isLanguage } from "@/lib/templates";
 import { getSandbox, workerScript, type RuntimeWorker } from "./sandbox";
-
-export const SUPPORTED_LANGUAGES: Language[] = ["python", "c", "cpp"];
-
-export class UnsupportedLanguage extends Error {}
 
 export type StartStatus = (message: string) => void;
 
@@ -57,16 +53,11 @@ export async function compileNative(
 
 /** Starts a bot-host worker running `source`. The caller owns the worker and must terminate it. */
 export async function startBot(
-  language: Language,
+  language: string,
   source: string,
   onStatus: StartStatus,
 ): Promise<{ worker: RuntimeWorker; logs: string[] }> {
-  if (language !== "python" && language !== "c" && language !== "cpp") {
-    const name = language === "go" ? "Go" : "Java";
-    throw new UnsupportedLanguage(
-      `${name} bots can be written and saved, but the in-browser ${name} runtime is not enabled yet.`,
-    );
-  }
+  if (!isLanguage(language)) throw new Error("Only Python, C and C++ bots can run.");
   const sandbox = await getSandbox();
   const worker = sandbox.spawn(await workerScript("/runtimes/bot-host.js"));
   try {

@@ -1,9 +1,17 @@
 # ACM Trading Simulator
 
 A live, seeded market for algorithmic-trading competitions, in the spirit of IMC Prosperity. Groups
-write bots in Python, C or C++ (Java and Go can be written and saved, not yet run), backtest them in
-the browser on a public slice of the market, then run them live against every other group as makers
-and takers.
+write bots in Python, C or C++, backtest them in the browser on a public slice of the market, then
+run them live against every other group as makers and takers. `/about` explains the game to students
+with no finance background.
+
+**The bot API.** Every round trades a single good. Every tick, in every round, the runtime calls the
+bot's `run(state)` with a flat view of that good: `state.price` (halfway between the best bid and
+ask), `state.bids`, `state.asks`, `state.position`, `state.limit`, `state.cash`, `state.trades`,
+`state.my_trades`, and in best-time rounds `state.prices`. The bot returns orders made with
+`buy(price, qty)` and `sell(price, qty)`, which replace last tick's orders. The SDKs live in
+`web/public/runtimes/` (Python inside `bot-host.js`, C/C++ in `sdk/`); the engine's wire protocol
+underneath is unchanged and still keyed by good.
 
 ```
 Browser (Next.js on Vercel) ── public market feed / trading socket ──▶ Engine (FastAPI on Render)
@@ -22,8 +30,9 @@ Browser (Next.js on Vercel) ── public market feed / trading socket ──▶
 
 ## How the market works
 
-- **Fair value** per good follows a hidden stochastic process. `STABLE` is Ornstein–Uhlenbeck mean
-  reversion. `VOLATILE` is GBM with GARCH(1,1) volatility clustering, Student-t shocks and Merton jumps.
+- **Fair value** follows a hidden stochastic process. Each lobby trades one good, chosen by the
+  admin. `STABLE` is Ornstein–Uhlenbeck mean reversion. `VOLATILE` is GBM with GARCH(1,1)
+  volatility clustering, Student-t shocks and Merton jumps.
 - **Bot order flow** (the market without participants) has three parts:
   - a market maker that quotes around a noisy fair-value estimate and widens with volatility;
   - zero-intelligence noise traders: Poisson arrivals, exponential price offsets, geometric sizes;
@@ -40,6 +49,39 @@ Browser (Next.js on Vercel) ── public market feed / trading socket ──▶
   Backtests replay those ticks through the same matching code as the live engine (copied by
   `npm run sync:engine`), so a backtest reproduces the live market exactly for a single group.
 - **Scoring**: cash + positions marked at the hidden fair value when the lobby ends.
+
+## Static rounds
+
+Static rounds run alongside the live lobby. A static round is a lobby with `kind = 'static'`: its whole
+market is generated once by the engine, published, and never runs live.
+
+- **Presets** (`engine/market_core/static_rounds.py`):
+  - `BEST_TIME` has one price per tick for one good. You buy one unit once and sell it once, with no
+    short selling. These are LeetCode 121's rules, so the best possible score is exactly that
+    problem's answer for the published prices. It is replayed by `market_core/series.py`, which
+    also gives bots the whole price path as `state.prices` (C/C++: `s.prices`), since it is public.
+  - `FLAT_MEAN` is an order book around a constant mean. The bot maker quotes ±4 and noise traders
+    buy and sell around the mean, so quoting inside the spread earns it. Positions are scored at the
+    mean.
+- **Status flow:**
+  - **Build data & publish** calls the engine's `prepare`, which sets `scheduled`. The data is
+    public and backtests work.
+  - **Open** sets `running`, **Pause** sets `paused` and **Close** sets `finished`. These are plain
+    status changes from the admin panel; the engine isn't involved.
+  - You can pause the live lobby while static rounds stay open.
+- **Code.** Each group writes separate code per static round (`submissions.lobby_id`). They pick the
+  round in the editor's Round menu, which gives its own template and draft.
+- **Scores.** **Save & submit** runs the saved code over the whole round in the browser and reports
+  the score through the `submit_round_score` RPC. The latest score counts. It lands in
+  `lobby_results`, and every attempt is logged in `round_attempts`. Bots run in the browser, so a
+  determined group could report a made-up score. Each score points at the submission it came from,
+  so organizers can re-run that code to check it.
+- The home page shows a **scoreboard** with one column per round: the selected live lobby plus every
+  published static round. Each group's overview shows its score and rank in every round.
+
+`/about` is the public tutorial. It covers the task, the market, a line-by-line walkthrough of the
+Python template, strategy ideas, and the static rounds, including a step-through of the LeetCode
+solution. Every template starts with a reference comment describing each field of `state`.
 
 ## Local development
 
@@ -59,7 +101,8 @@ npm run dev                     # http://localhost:3000; .env.local points at Su
 ```
 
 A dataset can also be built without Supabase:
-`cd engine && uv run python -m scripts.make_dataset --seed 42 --out out/demo`.
+`cd engine && uv run python -m scripts.make_dataset --seed 42 --out out/demo`. Add
+`--preset BEST_TIME` or `--preset FLAT_MEAN` to build a static round instead.
 
 ## Tests
 
@@ -139,3 +182,6 @@ Everything runs on free plans: Render Free, Supabase Free and Vercel Hobby.
    trading** and starts the bot. It runs in that tab.
 5. Admin clicks **Start live trading**. The lobby ends by itself after its live ticks, or when **End
    lobby** is clicked. Final results are stored and shown on the home page.
+6. Static rounds can run at any point. Under **Static rounds**, the admin creates a round from a
+   preset, clicks **Build data & publish**, then **Open submissions**. While groups work on them,
+   the live lobby can be paused and resumed. **Close round** makes the scores final.

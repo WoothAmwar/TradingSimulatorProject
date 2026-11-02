@@ -3,7 +3,8 @@
 import { refresh } from "next/cache";
 import { requireAdmin } from "@/lib/auth";
 import { callEngine, type LobbyAction } from "@/lib/engine";
-import { GOOD_PRESETS } from "@/lib/lobby";
+import { GOOD_PRESETS, isStaticPreset, STATIC_PRESETS } from "@/lib/lobby";
+import type { Enums, Json, TablesInsert } from "@/lib/supabase/database.types";
 
 export type ActionResult = { ok: true; value?: string } | { ok: false; error: string };
 
@@ -79,53 +80,128 @@ export async function removeMember(groupId: string, userId: string) {
   });
 }
 
-// Lobbies -----------------------------------------------------------------------------------
+// Lobbies and static rounds -----------------------------------------------------------------
+
+function seedField(form: FormData): string {
+  const seed = String(form.get("seed") ?? "").trim();
+  if (seed && (!/^\d{1,39}$/.test(seed) || BigInt(seed) >= 2n ** 128n)) {
+    throw new Error("Seed must be an integer in [0, 2^128)");
+  }
+  return seed;
+}
+
+/** Inserts a lobby with its secrets row, removing the lobby again if the secrets insert fails. */
+async function insertLobby(
+  supabase: Awaited<ReturnType<typeof requireAdmin>>["supabase"],
+  lobby: TablesInsert<"lobbies">,
+  modelConfig: Json,
+  seed: string,
+) {
+  const { data, error } = await supabase.from("lobbies").insert(lobby).select("id").single();
+  if (error) throw new Error(error.message);
+
+  // The engine resolves preset names into full model parameters; the seed column is
+  // numeric(39), passed as a string so no precision is lost.
+  const secret = {
+    lobby_id: data.id,
+    model_config: modelConfig,
+    ...(seed ? { seed: seed as unknown as number } : {}),
+  };
+  const { error: secretError } = await supabase.from("lobby_secrets").insert(secret);
+  if (secretError) {
+    await supabase.from("lobbies").delete().eq("id", data.id);
+    throw new Error(secretError.message);
+  }
+}
 
 export async function createLobby(form: FormData) {
   return run(async () => {
     const { viewer, supabase } = await requireAdmin();
     const name = String(form.get("name") ?? "").trim();
     if (!name) throw new Error("Lobby name is required");
-    const goods = form.getAll("goods").map(String).filter((g) => g in GOOD_PRESETS);
-    if (goods.length === 0) throw new Error("Pick at least one good");
-    const seed = String(form.get("seed") ?? "").trim();
-    if (seed && (!/^\d{1,39}$/.test(seed) || BigInt(seed) >= 2n ** 128n)) {
-      throw new Error("Seed must be an integer in [0, 2^128)");
-    }
+    const good = String(form.get("good") ?? "");
+    if (!(good in GOOD_PRESETS)) throw new Error("Pick a good");
+    const goods = [good]; // every lobby trades a single good
+    const seed = seedField(form);
     const publicConfig = {
       goods,
       tick_ms: intField(form, "tick_ms", 200, 10_000, 1000),
       dataset_ticks: intField(form, "dataset_ticks", 100, 100_000, 10_000),
       live_ticks: intField(form, "live_ticks", 10, 100_000, 3_600),
     };
-
-    const { data: lobby, error } = await supabase
-      .from("lobbies")
-      .insert({
+    await insertLobby(
+      supabase,
+      {
         name,
+        kind: "live",
         max_groups: intField(form, "max_groups", 1, 200, 20),
         public_config: publicConfig,
         created_by: viewer.id,
-      })
-      .select("id")
-      .single();
-    if (error) throw new Error(error.message);
-
-    // The engine resolves preset names into full model parameters; the seed column is
-    // numeric(39), passed as a string so no precision is lost.
-    const secret = {
-      lobby_id: lobby.id,
-      model_config: { goods, overrides: {} },
-      ...(seed ? { seed: seed as unknown as number } : {}),
-    };
-    const { error: secretError } = await supabase.from("lobby_secrets").insert(secret);
-    if (secretError) {
-      await supabase.from("lobbies").delete().eq("id", lobby.id);
-      throw new Error(secretError.message);
-    }
+      },
+      { goods, overrides: {} },
+      seed,
+    );
   });
 }
 
+export async function createStaticRound(form: FormData) {
+  return run(async () => {
+    const { viewer, supabase } = await requireAdmin();
+    const name = String(form.get("name") ?? "").trim();
+    if (!name) throw new Error("Round name is required");
+    const preset = String(form.get("preset") ?? "");
+    if (!isStaticPreset(preset)) throw new Error("Pick a preset");
+    const seed = seedField(form);
+    const publicConfig = {
+      preset,
+      goods: [STATIC_PRESETS[preset].good],
+      dataset_ticks: intField(form, "ticks", 10, 20_000, STATIC_PRESETS[preset].ticks),
+    };
+    await insertLobby(
+      supabase,
+      { name, kind: "static", public_config: publicConfig, created_by: viewer.id },
+      { preset },
+      seed,
+    );
+  });
+}
+
+export type StaticRoundAction = "open" | "pause" | "resume" | "close";
+
+const STATIC_TRANSITIONS: Record<
+  StaticRoundAction,
+  { from: Enums<"lobby_status">[]; to: Enums<"lobby_status"> }
+> = {
+  open: { from: ["scheduled"], to: "running" },
+  pause: { from: ["running"], to: "paused" },
+  resume: { from: ["paused"], to: "running" },
+  close: { from: ["running", "paused"], to: "finished" },
+};
+
+/** Opens, pauses or closes scoring for a static round. Static rounds have no engine runner, so
+ * this is a status change only, independent of any live lobby. */
+export async function staticRoundAction(lobbyId: string, action: StaticRoundAction) {
+  return run(async () => {
+    const { supabase } = await requireAdmin();
+    const { from, to } = STATIC_TRANSITIONS[action];
+    const now = new Date().toISOString();
+    const { data, error } = await supabase
+      .from("lobbies")
+      .update({
+        status: to,
+        ...(action === "open" ? { started_at: now } : {}),
+        ...(action === "close" ? { finished_at: now } : {}),
+      })
+      .eq("id", lobbyId)
+      .eq("kind", "static")
+      .in("status", from)
+      .select("id");
+    if (error) throw new Error(error.message);
+    if (!data?.length) throw new Error("The round's status changed; reload and try again");
+  });
+}
+
+/** Live lobbies can be deleted unless they are running; static rounds in any status. */
 export async function deleteLobby(lobbyId: string) {
   return run(async () => {
     const { supabase } = await requireAdmin();
@@ -133,7 +209,7 @@ export async function deleteLobby(lobbyId: string) {
       .from("lobbies")
       .delete()
       .eq("id", lobbyId)
-      .in("status", ["draft", "scheduled", "finished"]);
+      .or("kind.eq.static,status.in.(draft,scheduled,finished)");
     if (error) throw new Error(error.message);
   });
 }

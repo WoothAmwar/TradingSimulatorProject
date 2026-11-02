@@ -3,10 +3,11 @@
 The JavaScript backtester drives this one tick at a time so that bots written in any
 language can respond in between::
 
-    bt = Backtest(manifest, events)
+    bt = make_backtest(manifest, events)
     while (state := bt.open_next()) is not None:
         response = <ask the bot with state>
         summary = bt.close(response)
+    bt.score()
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ from collections.abc import Callable, Iterable
 from .driver import TickDriver
 from .exchange import ExchangeRules
 from .protocol import bot_state, parse_bot_response
+from .series import SeriesBacktest
 from .types import action_from_dict
 
 
@@ -24,10 +26,12 @@ class Backtest:
     def __init__(self, manifest: dict, events: Iterable[dict], owner: str = "you") -> None:
         self.rules = ExchangeRules.from_dict(manifest["rules"])
         self.driver = TickDriver(self.rules, b"", manifest.get("depth_levels", 10))
+        self.goods = list(self.rules.goods)
         self.owner = owner
         self._events = iter(events)
         self._post: list = []
         self._marks: dict[str, float] = {}
+        self._final_marks: dict[str, float] = dict(manifest.get("marks", {}))
 
     def open_next(self) -> dict | None:
         event = next(self._events, None)
@@ -66,6 +70,13 @@ class Backtest:
             "rejects": [r.reason for r in rejects],
         }
 
+    def score(self) -> float:
+        """Cash plus positions marked at the round's published marks (static rounds score at
+        the known mean) or, for live datasets, at the last mid prices."""
+        acct = self.driver.exchange.account(self.owner)
+        marks = {**self._marks, **self._final_marks}
+        return acct.cash + sum(q * marks.get(g, 0.0) for g, q in acct.position.items())
+
     def run(self, trader: Callable[[dict], object]) -> list[dict]:
         summaries = []
         while (state := self.open_next()) is not None:
@@ -79,3 +90,11 @@ class Backtest:
 
     def close_json(self, response_json: str) -> str:
         return json.dumps(self.close(json.loads(response_json) if response_json else None))
+
+
+def make_backtest(manifest: dict, events: Iterable[dict], owner: str = "you"):
+    """The replayer for a dataset: an order book (live lobbies and order-book static rounds) or
+    a price series (static rounds with one price per tick)."""
+    if manifest.get("kind") == "series":
+        return SeriesBacktest(manifest, events, owner)
+    return Backtest(manifest, events, owner)

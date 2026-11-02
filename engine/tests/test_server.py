@@ -213,3 +213,71 @@ def test_recovery_replays_to_identical_state():
         assert runner2.sim.driver.exchange.books["STABLE"].depth() == (
             runner1.sim.driver.exchange.books["STABLE"].depth()
         )
+
+
+STATIC = "round-1"
+
+
+def add_static_round(store: MemoryStore, status: str = "draft") -> None:
+    store.lobbies[STATIC] = LobbyRecord(
+        id=STATIC,
+        name="Best time",
+        status=status,
+        public_config={"preset": "BEST_TIME", "goods": ["STOCK"], "dataset_ticks": 50},
+        current_tick=None,
+        max_groups=20,
+        kind="static",
+    )
+    store.secrets[STATIC] = (987654321, {"preset": "BEST_TIME"})
+
+
+def test_static_round_publishes_data_and_never_runs_live():
+    store = make_store()
+    add_static_round(store)
+    with TestClient(make_app(store)) as client:
+        assert client.post(f"/admin/lobbies/{STATIC}/prepare", headers=ADMIN).status_code == 200
+        lobby = store.lobbies[STATIC]
+        assert lobby.status == "scheduled"
+        assert lobby.public_config["rules"]["max_trades"] == 2
+        assert len(lobby.public_config["preview"]["STOCK"]) == 50
+        files, manifest = store.datasets[STATIC]
+        assert manifest["kind"] == "series" and set(files) == {
+            "events.jsonl.gz",
+            "prices.csv",
+            "manifest.json",
+        }
+
+        r = client.post(f"/admin/lobbies/{STATIC}/start", headers=ADMIN)
+        assert r.status_code == 409 and "admin panel" in r.json()["detail"]
+        with client.websocket_connect(f"/ws/market/{STATIC}") as ws:
+            with pytest.raises(WebSocketDisconnect) as exc:
+                ws.receive_json()
+            assert exc.value.code == 4404
+
+    lobby.status = "running"  # opened for submissions from the admin panel
+    app = make_app(store, "i2")
+    with TestClient(app):
+        time.sleep(0.2)  # let startup recovery run
+        assert STATIC not in app.state.manager.runners
+        assert STATIC not in store.leases
+
+
+def test_static_round_rejects_unknown_preset():
+    store = make_store()
+    add_static_round(store)
+    store.lobbies[STATIC].public_config["preset"] = "NOPE"
+    store.secrets[STATIC] = (1, {})
+    with TestClient(make_app(store)) as client:
+        r = client.post(f"/admin/lobbies/{STATIC}/prepare", headers=ADMIN)
+        assert r.status_code == 400 and "preset" in r.json()["detail"]
+        assert store.lobbies[STATIC].status == "draft"
+
+
+def test_lobby_trades_exactly_one_good():
+    store = make_store()
+    store.lobbies[LOBBY].public_config["goods"] = ["STABLE", "VOLATILE"]
+    store.secrets[LOBBY] = (1, {"goods": ["STABLE", "VOLATILE"], "overrides": {}})
+    with TestClient(make_app(store)) as client:
+        r = client.post(f"/admin/lobbies/{LOBBY}/prepare", headers=ADMIN)
+        assert r.status_code == 400 and "one good" in r.json()["detail"]
+        assert store.lobbies[LOBBY].status == "draft"

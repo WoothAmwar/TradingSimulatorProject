@@ -70,13 +70,8 @@ const compiler = () =>
     ],
   ]);
 
-// The starter templates live in lib/templates.ts; evaluate that object literal.
-function templates() {
-  const src = readFileSync(join(WEB, "lib/templates.ts"), "utf8");
-  const body = src.slice(src.indexOf("export const TEMPLATES"));
-  const literal = body.slice(body.indexOf("{"), body.lastIndexOf("};") + 1);
-  return new Function(`return (${literal});`)();
-}
+// The starter templates live in lib/templates.ts, which Node imports with its types stripped.
+const { TEMPLATES, STATIC_TEMPLATES } = await import(pathToFileURL(join(WEB, "lib/templates.ts")).href);
 
 const sdk = Object.fromEntries(
   ["trader.h", "harness.c", "trader.hpp", "harness.cpp"].map((f) => [
@@ -92,32 +87,40 @@ const marketCore = Object.fromEntries(
 );
 
 let dataset;
+let bestTime;
+let flatMean;
 let host;
 
-before(() => {
-  const out = join(tmp, "dataset");
-  execFileSync("uv", ["run", "python", "-m", "scripts.make_dataset", "--seed", "99", "--ticks", "400", "--out", out], {
+function makeDataset(name, ...args) {
+  const out = join(tmp, name);
+  execFileSync("uv", ["run", "python", "-m", "scripts.make_dataset", ...args, "--out", out], {
     cwd: ENGINE,
     stdio: "ignore",
   });
-  dataset = {
+  return {
     dir: out,
     manifest: readFileSync(join(out, "manifest.json"), "utf8"),
     events: () => new Uint8Array(readFileSync(join(out, "events.jsonl.gz"))),
   };
+}
+
+before(() => {
+  dataset = makeDataset("dataset", "--seed", "99", "--ticks", "400", "--good", "STABLE");
+  bestTime = makeDataset("best-time", "--preset", "BEST_TIME", "--seed", "5");
+  flatMean = makeDataset("flat-mean", "--preset", "FLAT_MEAN", "--seed", "5", "--ticks", "400");
   host = botHost();
 });
 
 after(() => host?.terminate());
 
-async function backtest(initBot) {
+async function backtest(initBot, data = dataset) {
   await initBot(host);
-  await host.call("init_backtest", { files: marketCore, manifest: dataset.manifest, events: dataset.events() });
+  await host.call("init_backtest", { files: marketCore, manifest: data.manifest, events: data.events() });
   const { result, logs } = await host.call("run_backtest", { maxTicks: 1e9 });
   return { ...JSON.parse(result), logs };
 }
 
-function nativeBacktest(source) {
+function nativeBacktest(source, data = dataset) {
   // Run the worker's own Python harness under CPython with the engine's market_core.
   const worker = readFileSync(join(WEB, "public/runtimes/bot-host.js"), "utf8");
   const decls = worker.slice(worker.indexOf("const SDK_SOURCE"), worker.indexOf("let logs"));
@@ -135,7 +138,7 @@ print(ns["_run_backtest"](bt, ns["_PyBot"](open(sys.argv[2]).read()), None, 10**
   const out = execFileSync(
     "uv",
     ["run", "python", "-c", script, join(tmp, "harness.py"), join(tmp, "bot.py"),
-      join(dataset.dir, "manifest.json"), join(dataset.dir, "events.jsonl.gz")],
+      join(data.dir, "manifest.json"), join(data.dir, "events.jsonl.gz")],
     { cwd: ENGINE, encoding: "utf8" },
   );
   return JSON.parse(out);
@@ -144,7 +147,7 @@ print(ns["_run_backtest"](bt, ns["_PyBot"](open(sys.argv[2]).read()), None, 10**
 let pythonResult;
 
 test("python template backtest in Pyodide matches the native engine exactly", { timeout: 300_000 }, async () => {
-  const source = templates().python;
+  const source = TEMPLATES.python;
   pythonResult = await backtest((h) => h.call("init_python_bot", { source }));
   assert.equal(pythonResult.ticks, 400);
   assert.deepEqual(pythonResult.errors, []);
@@ -156,17 +159,29 @@ test("python template backtest in Pyodide matches the native engine exactly", { 
 
 test("python live tick, print() capture and error reporting", { timeout: 120_000 }, async () => {
   const state = {
-    tick: 5, goods: ["X"], limits: { X: 10 }, cash: 0, position: { X: 0 }, open_orders: [], own_trades: [],
-    order_depths: { X: { bids: [[99, 4]], asks: [[103, 2]] } }, market_trades: { X: [[101, 1, 1]] },
+    tick: 5, goods: ["X"], limits: { X: 10 }, cash: 0, position: { X: 0 }, open_orders: [],
+    own_trades: [{ good: "X", price: 101, qty: -1, maker: true }],
+    order_depths: { X: { bids: [[99, 4]], asks: [[102, 2]] } }, market_trades: { X: [[101, 1, 1]] },
   };
   await host.call("init_python_bot", {
-    source: `from trader_sdk import Order, Response\nclass Trader:\n    def run(self, s):\n        print("tick", s.tick, s.market_trades["X"])\n        return Response(orders=[Order("X", 100.0, 2)])\n`,
+    source: `from trader_sdk import buy, sell\nclass Trader:\n    def run(self, s):\n        print(s.tick, s.price, s.position, s.limit, s.trades, s.my_trades)\n        return [buy(s.price, 2), sell(103, 1)]\n`,
   });
   const { result, logs } = await host.call("tick", { state: JSON.stringify(state) });
   assert.deepEqual(JSON.parse(result), {
-    orders: [{ good: "X", price: 100, qty: 2, tif: "GTC" }], cancel: [], cancel_all: false,
+    cancel_all: true,
+    orders: [{ good: "X", price: 100, qty: 2 }, { good: "X", price: 103, qty: -1 }], // 100.5 rounds to 100
   });
-  assert.deepEqual(logs, ["tick 5 [(101, 1, 1)]"]);
+  assert.deepEqual(logs, ["5 100.5 0 10 [(101, 1)] [(101, -1)]"]);
+
+  // Returning nothing, or a single order, works too.
+  await host.call("init_python_bot", { source: "from trader_sdk import buy\nclass Trader:\n    def run(self, s):\n        return buy(99)\n" });
+  assert.deepEqual(JSON.parse((await host.call("tick", { state: JSON.stringify(state) })).result), {
+    cancel_all: true, orders: [{ good: "X", price: 99, qty: 1 }],
+  });
+  await host.call("init_python_bot", { source: "class Trader:\n    def run(self, s):\n        pass\n" });
+  assert.deepEqual(JSON.parse((await host.call("tick", { state: JSON.stringify(state) })).result), {
+    cancel_all: true, orders: [],
+  });
 
   await host.call("init_python_bot", { source: "class Trader:\n    def run(self, s):\n        return 1 / 0\n" });
   await assert.rejects(host.call("tick", { state: JSON.stringify(state) }), /ZeroDivisionError/);
@@ -178,7 +193,7 @@ for (const language of ["c", "cpp"]) {
   test(`${language} template compiles in the browser toolchain and trades like the python template`, { timeout: 600_000 }, async () => {
     const cc = compiler();
     try {
-      const { result: wasm } = await cc.call("compile", { language, source: templates()[language], sdk });
+      const { result: wasm } = await cc.call("compile", { language, source: TEMPLATES[language], sdk });
       assert.ok(wasm.byteLength > 1000);
       const result = await backtest((h) => h.call("init_wasm_bot", { wasm }));
       assert.deepEqual(result.errors, []);
@@ -190,6 +205,31 @@ for (const language of ["c", "cpp"]) {
         cc.call("compile", { language, source: "this is not valid code", sdk }),
         /error/,
       );
+    } finally {
+      await cc.terminate();
+    }
+  });
+}
+
+for (const preset of ["BEST_TIME", "FLAT_MEAN"]) {
+  test(`${preset} static templates trade identically in Python, C and C++`, { timeout: 600_000 }, async () => {
+    const data = preset === "BEST_TIME" ? bestTime : flatMean;
+    const templates = STATIC_TEMPLATES[preset];
+    const python = await backtest((h) => h.call("init_python_bot", { source: templates.python }), data);
+    assert.deepEqual(python.errors, []);
+    assert.equal(python.rejects, 0);
+    assert.deepEqual(python.series, nativeBacktest(templates.python, data).series);
+    if (preset === "BEST_TIME") assert.equal(python.fills.length, 2, "one buy, then one sell");
+    else assert.ok(python.score > 0, "quoting inside the bot's spread should earn the spread");
+    const cc = compiler();
+    try {
+      for (const language of ["c", "cpp"]) {
+        const { result: wasm } = await cc.call("compile", { language, source: templates[language], sdk });
+        const result = await backtest((h) => h.call("init_wasm_bot", { wasm }), data);
+        assert.deepEqual(result.errors, [], language);
+        assert.deepEqual(result.series, python.series, language);
+        assert.equal(result.score, python.score, language);
+      }
     } finally {
       await cc.terminate();
     }

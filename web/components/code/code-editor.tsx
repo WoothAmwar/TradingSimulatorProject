@@ -1,7 +1,21 @@
 "use client";
 
 import Editor from "@monaco-editor/react";
-import { monacoLanguage } from "@/lib/templates";
+
+// On Safari, Monaco pre-arms a clipboard write on every click and keypress in the editor and logs
+// Safari's refusal (NotAllowedError) as an error, which Next's dev overlay shows as a "Console Error".
+// Copy and paste still work, so drop just that log: a NotAllowedError logged from Monaco's code.
+let clipboardLogQuieted = false;
+function quietMonacoClipboardLog() {
+  if (clipboardLogQuieted) return;
+  clipboardLogQuieted = true;
+  const original = console.error;
+  console.error = (...args: unknown[]) => {
+    const denied = args.some((a) => (a as { name?: unknown } | null)?.name === "NotAllowedError");
+    if (denied && new Error().stack?.includes("monaco-editor")) return;
+    original.apply(console, args);
+  };
+}
 
 export function CodeEditor({
   language,
@@ -21,9 +35,10 @@ export function CodeEditor({
       <Editor
         height={height}
         theme="vs-dark"
-        language={monacoLanguage(language)}
+        language={language}
         value={value}
         onChange={(v) => onChange?.(v ?? "")}
+        beforeMount={quietMonacoClipboardLog}
         options={{
           readOnly,
           minimap: { enabled: false },

@@ -22,6 +22,9 @@ async function Submission({ params }: Pick<PageProps<"/g/[slug]/s/[id]">, "param
   ]);
   if (!submission) notFound();
   const author = roster?.find((m) => m.user_id === submission.author_id)?.display_name;
+  const round = submission.lobby_id
+    ? (await supabase.from("lobbies").select("name").eq("id", submission.lobby_id).maybeSingle()).data
+    : null;
 
   return (
     <div className="space-y-4">
@@ -29,7 +32,8 @@ async function Submission({ params }: Pick<PageProps<"/g/[slug]/s/[id]">, "param
         <div>
           <h2 className="text-lg font-semibold">{submission.title}</h2>
           <p className="text-sm text-muted">
-            {languageLabel(submission.language)} · {author ?? "former member"} ·{" "}
+            {round ? `Static round: ${round.name}` : "Live market"} · {languageLabel(submission.language)} ·{" "}
+            {author ?? "former member"} ·{" "}
             {new Date(submission.created_at).toLocaleString()} ·{" "}
             <span className="num">sha256 {submission.source_sha256?.slice(0, 12)}</span>
           </p>

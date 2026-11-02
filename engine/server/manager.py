@@ -11,6 +11,7 @@ from pathlib import Path
 
 from market_core.config import resolve_lobby_config
 from market_core.dataset import build_dataset
+from market_core.static_rounds import build_static_dataset
 
 from .runner import LobbyRunner
 from .settings import Settings
@@ -135,7 +136,7 @@ class EngineManager:
             if lobby_id in self.runners:
                 return self.runners[lobby_id]
             lobby = await self.store.load_lobby(lobby_id)
-            if lobby is None or lobby.status != "scheduled":
+            if lobby is None or lobby.kind != "live" or lobby.status != "scheduled":
                 return None
             return await self._build(lobby)
 
@@ -143,7 +144,7 @@ class EngineManager:
         """For lobbies without a runner here: finished ones (from the database) or ones that
         another instance is running."""
         lobby = await self.store.load_lobby(lobby_id)
-        if lobby is None or lobby.status == "draft":
+        if lobby is None or lobby.kind != "live" or lobby.status == "draft":
             return None
         history: dict[str, list[list[float]]] = defaultdict(list)
         leaderboard: list[dict] = []
@@ -181,37 +182,72 @@ class EngineManager:
         return lobby
 
     async def prepare(self, lobby_id: str) -> None:
-        """Builds the public dataset (ticks 0..K-1), uploads it and publishes the lobby."""
+        """Builds the public dataset, uploads it and publishes the lobby. For a live lobby that is
+        ticks 0..K-1; for a static round it is the whole round."""
         async with self._locks[lobby_id]:
             lobby = await self._lobby(lobby_id, ("draft", "scheduled"))
             seed, model = await self.store.load_secret(lobby_id)
-            try:
-                config = resolve_lobby_config(lobby.public_config, model)
-            except ValueError as exc:
-                raise LobbyError(str(exc), 400) from exc
-            with tempfile.TemporaryDirectory() as tmp:
-                out = Path(tmp)
-                manifest = await asyncio.to_thread(build_dataset, config, seed, out)
-                files = {name: (out / name).read_bytes() for name in manifest["files"]}
-                files["manifest.json"] = (out / "manifest.json").read_bytes()
-            await self.store.save_dataset(lobby_id, files, manifest)
-            public = {
-                **lobby.public_config,
-                "goods": [g.name for g in config.goods],
-                "tick_ms": config.tick_ms,
-                "dataset_ticks": config.dataset_ticks,
-                "live_ticks": config.live_ticks,
-                "depth_levels": config.depth_levels,
-                "rules": config.rules().to_dict(),
-            }
+            if lobby.kind == "static":
+                public = await self._prepare_static(lobby, seed, model)
+            else:
+                public = await self._prepare_live(lobby, seed, model)
             await self.store.update_lobby(
                 lobby_id, {"public_config": public, "status": "scheduled"}
             )
             self.runners.pop(lobby_id, None)  # previews must pick up the new config
 
+    async def _prepare_live(self, lobby: LobbyRecord, seed: int, model: dict) -> dict:
+        try:
+            config = resolve_lobby_config(lobby.public_config, model)
+        except ValueError as exc:
+            raise LobbyError(str(exc), 400) from exc
+        if len(config.goods) != 1:
+            raise LobbyError("a lobby trades exactly one good", 400)
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            manifest = await asyncio.to_thread(build_dataset, config, seed, out)
+            await self._upload(lobby.id, out, manifest)
+        return {
+            **lobby.public_config,
+            "goods": [g.name for g in config.goods],
+            "tick_ms": config.tick_ms,
+            "dataset_ticks": config.dataset_ticks,
+            "live_ticks": config.live_ticks,
+            "depth_levels": config.depth_levels,
+            "rules": config.rules().to_dict(),
+        }
+
+    async def _prepare_static(self, lobby: LobbyRecord, seed: int, model: dict) -> dict:
+        preset = lobby.public_config.get("preset") or model.get("preset")
+        ticks = lobby.public_config.get("dataset_ticks")
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            try:
+                manifest, preview = await asyncio.to_thread(
+                    build_static_dataset, preset, int(ticks or 0), seed, out
+                )
+            except ValueError as exc:
+                raise LobbyError(str(exc), 400) from exc
+            await self._upload(lobby.id, out, manifest)
+        return {
+            **lobby.public_config,
+            "preset": preset,
+            "goods": manifest["rules"]["goods"],
+            "dataset_ticks": manifest["ticks"],
+            "rules": manifest["rules"],
+            "preview": preview,
+        }
+
+    async def _upload(self, lobby_id: str, out: Path, manifest: dict) -> None:
+        files = {name: (out / name).read_bytes() for name in manifest["files"]}
+        files["manifest.json"] = (out / "manifest.json").read_bytes()
+        await self.store.save_dataset(lobby_id, files, manifest)
+
     async def start(self, lobby_id: str) -> None:
         async with self._locks[lobby_id]:
             lobby = await self._lobby(lobby_id, ("scheduled",))
+            if lobby.kind != "live":
+                raise LobbyError("static rounds are opened from the admin panel, not the engine")
             if not await self._claim(lobby_id):
                 raise LobbyError("another engine instance holds this lobby")
             runner = self.runners.get(lobby_id) or await self._build(lobby)

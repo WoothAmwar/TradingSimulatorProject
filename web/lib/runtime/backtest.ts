@@ -9,6 +9,8 @@ export type BacktestResult = {
   rejects: number;
   errors: { tick: number; error: string }[];
   ticks: number;
+  /** Cash plus positions at the round's marks: the official result for a static round. */
+  score: number;
 };
 
 type Dataset = { manifest: string; events: Uint8Array };
@@ -36,6 +38,15 @@ export function loadDataset(lobbyId: string): Promise<Dataset> {
     datasets.set(lobbyId, load);
   }
   return datasets.get(lobbyId)!;
+}
+
+/** Saves one of a lobby's published data files (e.g. prices.csv) to the user's computer. */
+export async function downloadDatasetFile(lobbyId: string, file: string): Promise<void> {
+  const { data, error } = await createClient().storage.from("datasets").download(`${lobbyId}/${file}`);
+  if (error) throw new Error(`${file} is not available for this round`);
+  const url = URL.createObjectURL(data);
+  Object.assign(document.createElement("a"), { href: url, download: file }).click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 /** Browser copies of the engine's matching code (synced from engine/market_core). */

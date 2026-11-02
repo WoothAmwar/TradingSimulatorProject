@@ -6,47 +6,51 @@ const PYODIDE_URL = "https://cdn.jsdelivr.net/pyodide/v314.0.7/full/";
 const WASI_SHIM_URL = "https://cdn.jsdelivr.net/npm/@bjorn3/browser_wasi_shim@0.4.2/dist/index.js";
 
 const SDK_SOURCE = `
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 @dataclass
 class Order:
-    good: str
     price: int
-    qty: int            # > 0 buys, < 0 sells
-    tif: str = "GTC"    # "GTC" rests on the book, "IOC" cancels any unfilled part
-    client_id: str | None = None
+    qty: int  # > 0 buys, < 0 sells
 
 
-@dataclass
-class Book:
-    bids: list          # [(price, qty)], best (highest) first
-    asks: list          # [(price, qty)], best (lowest) first
+def buy(price, qty=1):
+    """An order to buy qty units, paying at most price for each."""
+    return Order(price, abs(qty))
 
 
-@dataclass
-class Response:
-    """Return this instead of a list to keep resting orders: nothing is cancelled unless asked."""
-    orders: list = field(default_factory=list)
-    cancel: list = field(default_factory=list)   # order ids from state.open_orders
-    cancel_all: bool = False
+def sell(price, qty=1):
+    """An order to sell qty units, getting at least price for each."""
+    return Order(price, -abs(qty))
 
 
 class TradingState:
+    """What run(state) gets every tick. Every round trades a single good."""
+
     def __init__(self, d):
-        self.raw = d
+        good = d["goods"][0]
+        book = d["order_depths"][good]
         self.tick = d["tick"]
-        self.goods = d["goods"]
-        self.limits = d["limits"]
-        self.order_depths = {
-            g: Book([tuple(l) for l in b["bids"]], [tuple(l) for l in b["asks"]])
-            for g, b in d["order_depths"].items()
-        }
-        self.market_trades = {g: [tuple(t) for t in ts] for g, ts in d["market_trades"].items()}
-        self.position = d["position"]
+        self.bids = [tuple(level) for level in book["bids"]]  # offers to buy, highest price first
+        self.asks = [tuple(level) for level in book["asks"]]  # offers to sell, lowest price first
+        self.price = _middle(self.bids, self.asks)
+        self.position = d["position"][good]
+        self.limit = d["limits"][good]
         self.cash = d["cash"]
-        self.open_orders = d["open_orders"]
-        self.own_trades = d["own_trades"]
+        self.trades = [(price, qty) for price, qty, _ in d["market_trades"][good]]
+        self.my_trades = [(t["price"], t["qty"]) for t in d["own_trades"] if t["good"] == good]
+        self.prices = d.get("prices", {}).get(good, ())  # "best time" rounds: every tick's price
+
+
+def _middle(bids, asks):
+    """Halfway between the best offer to buy and the best offer to sell (or whichever exists)."""
+    if bids and asks:
+        middle = (bids[0][0] + asks[0][0]) / 2
+        return int(middle) if middle.is_integer() else middle
+    if bids or asks:
+        return (bids or asks)[0][0]
+    return None
 `;
 
 const HARNESS = `
@@ -58,34 +62,28 @@ sys.modules["trader_sdk"] = _sdk
 
 
 def _int(x):
+    """Prices and quantities are whole numbers, so a price such as 100.5 is rounded."""
     try:
         return operator.index(x)
     except TypeError:
-        return int(x) if isinstance(x, float) and x.is_integer() else x
+        return round(x) if isinstance(x, float) else x
 
 
-def _order(o):
-    if isinstance(o, _sdk.Order):
-        d = {"good": o.good, "price": _int(o.price), "qty": _int(o.qty), "tif": o.tif}
-        if o.client_id is not None:
-            d["client_id"] = o.client_id
-        return d
-    if isinstance(o, dict):
-        return {**o, "price": _int(o.get("price")), "qty": _int(o.get("qty"))}
-    if isinstance(o, (tuple, list)) and len(o) == 3:
-        return {"good": o[0], "price": _int(o[1]), "qty": _int(o[2])}
-    raise TypeError(f"not an order: {o!r}")
+def _order(o, good):
+    if not isinstance(o, _sdk.Order):
+        raise TypeError(f"not an order: {o!r}; use buy(price, qty) or sell(price, qty)")
+    return {"good": good, "price": _int(o.price), "qty": _int(o.qty)}
 
 
-def _to_response(out):
+def _to_response(out, good):
+    """Whatever run() returns replaces last tick's orders; None or [] means no orders."""
     if out is None:
-        return None
-    if isinstance(out, _sdk.Response):
-        return {"orders": [_order(o) for o in out.orders], "cancel": list(out.cancel),
-                "cancel_all": bool(out.cancel_all)}
-    if isinstance(out, (list, tuple)):
-        return {"cancel_all": True, "orders": [_order(o) for o in out]}
-    raise TypeError("run() must return a list of Order objects or a Response")
+        out = []
+    elif isinstance(out, _sdk.Order):
+        out = [out]
+    if not isinstance(out, (list, tuple)):
+        raise TypeError("run() must return a list of orders, e.g. [buy(100, 5)], or []")
+    return {"cancel_all": True, "orders": [_order(o, good) for o in out]}
 
 
 class _PyBot:
@@ -99,7 +97,7 @@ class _PyBot:
         self.trader = mod.Trader()
 
     def tick(self, state):
-        return _to_response(self.trader.run(_sdk.TradingState(state)))
+        return _to_response(self.trader.run(_sdk.TradingState(state)), state["goods"][0])
 
     def tick_json(self, state_json):
         return json.dumps(self.tick(json.loads(state_json)))
@@ -107,14 +105,14 @@ class _PyBot:
 
 def _start_backtest(manifest_json, events_gz):
     import gzip
-    from market_core.backtest import Backtest
+    from market_core.backtest import make_backtest
     text = gzip.decompress(events_gz.to_bytes()).decode()
     events = [json.loads(line) for line in text.splitlines() if line]
-    return Backtest(json.loads(manifest_json), events, owner="you")
+    return make_backtest(json.loads(manifest_json), events, owner="you")
 
 
 def _run_backtest(bt, py_bot, js_tick, max_ticks, every, progress):
-    goods = list(bt.rules.goods)
+    goods = list(bt.goods)
     series, fills, errors = [], [], []
     rejects = 0
     n = 0
@@ -122,6 +120,9 @@ def _run_backtest(bt, py_bot, js_tick, max_ticks, every, progress):
         state = bt.open_next()
         if state is None:
             break
+        if py_bot is None and n > 0:
+            # Compiled bots keep the price path from tick 0; resending it would cost O(ticks) a tick.
+            state = {k: v for k, v in state.items() if k != "prices"}
         try:
             if py_bot is not None:
                 response = py_bot.tick(state)
@@ -140,7 +141,7 @@ def _run_backtest(bt, py_bot, js_tick, max_ticks, every, progress):
         if n % every == 0:
             progress(n)
     return json.dumps({"goods": goods, "series": series, "fills": fills, "rejects": rejects,
-                       "errors": errors, "ticks": n})
+                       "errors": errors, "ticks": n, "score": bt.score()})
 `;
 
 let logs = [];
@@ -173,26 +174,28 @@ function getPyodide() {
   return pyodidePromise;
 }
 
-// Flat text state for compiled languages (see public/runtimes/sdk/harness.c).
+// Flat text state for compiled bots (see public/runtimes/sdk/harness.c). Rounds trade one good.
 function stateToText(s) {
-  const lines = [`T ${s.tick} ${s.cash} ${s.goods.length}`];
-  for (const g of s.goods) {
-    const d = s.order_depths[g] ?? { bids: [], asks: [] };
-    const t = s.market_trades[g] ?? [];
-    lines.push(`G ${g} ${s.position[g] ?? 0} ${s.limits[g] ?? 0}`);
-    lines.push(`B ${d.bids.length} ${d.bids.flat().join(" ")}`);
-    lines.push(`A ${d.asks.length} ${d.asks.flat().join(" ")}`);
-    lines.push(`X ${t.length} ${t.flat().join(" ")}`);
-  }
+  const good = s.goods[0];
+  const book = s.order_depths[good] ?? { bids: [], asks: [] };
+  const trades = (s.market_trades[good] ?? []).map(([price, qty]) => [price, qty]);
+  const lines = [
+    `T ${s.tick} ${s.cash} ${s.position[good] ?? 0} ${s.limits[good] ?? 0}`,
+    `B ${book.bids.length} ${book.bids.flat().join(" ")}`,
+    `A ${book.asks.length} ${book.asks.flat().join(" ")}`,
+    `X ${trades.length} ${trades.flat().join(" ")}`,
+  ];
+  const prices = s.prices?.[good];
+  if (prices) lines.push(`P ${prices.length} ${prices.join(" ")}`);
   return lines.join("\n") + "\n";
 }
 
-function textToResponse(text, goods) {
+// The harness writes one "price qty" line per order; they replace last tick's orders.
+function textToResponse(text, good) {
   const orders = [];
   for (const line of text.split("\n")) {
-    const [good, price, qty, ioc] = line.trim().split(/\s+/).map(Number);
-    if (!Number.isInteger(good) || goods[good] === undefined || !qty) continue;
-    orders.push({ good: goods[good], price, qty, tif: ioc ? "IOC" : "GTC" });
+    const [price, qty] = line.trim().split(/\s+/).map(Number);
+    if (Number.isInteger(price) && Number.isInteger(qty) && qty) orders.push({ good, price, qty });
   }
   return { cancel_all: true, orders };
 }
@@ -222,7 +225,7 @@ async function initWasmBot(wasm) {
       const mem = new Uint8Array(ex.memory.buffer);
       let end = out;
       while (mem[end] !== 0) end++;
-      return textToResponse(decoder.decode(mem.subarray(out, end)), state.goods);
+      return textToResponse(decoder.decode(mem.subarray(out, end)), state.goods[0]);
     },
   };
 }

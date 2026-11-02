@@ -12,6 +12,7 @@ export const BROWSER_MODULES = [
   "exchange.py",
   "driver.py",
   "protocol.py",
+  "series.py",
   "backtest.py",
 ];
 

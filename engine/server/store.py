@@ -20,6 +20,7 @@ class LobbyRecord:
     public_config: dict
     current_tick: int | None
     max_groups: int
+    kind: str = "live"  # "live" lobbies run on the engine; "static" rounds only publish data
 
 
 class Store(Protocol):
@@ -84,7 +85,7 @@ class RestStore:
         rows = await self._get(
             "lobbies",
             {
-                "select": "id,name,status,public_config,current_tick,max_groups",
+                "select": "id,name,status,public_config,current_tick,max_groups,kind",
                 "id": f"eq.{lobby_id}",
             },
         )
@@ -105,7 +106,11 @@ class RestStore:
         return {r["group_id"]: r["groups"]["name"] for r in rows}
 
     async def lobbies_with_status(self, statuses: list[str]) -> list[str]:
-        rows = await self._get("lobbies", {"select": "id", "status": f"in.({','.join(statuses)})"})
+        """Live lobbies only: static rounds never have a tick loop to recover."""
+        rows = await self._get(
+            "lobbies",
+            {"select": "id", "status": f"in.({','.join(statuses)})", "kind": "eq.live"},
+        )
         return [r["id"] for r in rows]
 
     async def update_lobby(self, lobby_id: str, fields: dict) -> None:
@@ -221,7 +226,11 @@ class MemoryStore:
         return {g: self.group_names[g] for g in self.entries[lobby_id]}
 
     async def lobbies_with_status(self, statuses: list[str]) -> list[str]:
-        return [lid for lid, lobby in self.lobbies.items() if lobby.status in statuses]
+        return [
+            lid
+            for lid, lobby in self.lobbies.items()
+            if lobby.status in statuses and lobby.kind == "live"
+        ]
 
     async def update_lobby(self, lobby_id: str, fields: dict) -> None:
         lobby = self.lobbies[lobby_id]

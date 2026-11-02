@@ -2,8 +2,11 @@ import Link from "next/link";
 import { Suspense } from "react";
 import { AdminPanel, type AdminData } from "@/components/admin/admin-panel";
 import { LiveMarket } from "@/components/market/live-market";
+import { Scoreboard, type ScoreboardData } from "@/components/market/scoreboard";
+import { StaticRoundCard } from "@/components/market/static-round-card";
 import { getViewer } from "@/lib/auth";
 import { ENGINE_URL } from "@/lib/engine";
+import { getStaticRounds } from "@/lib/group";
 import { publicConfig, STATUS_STYLES } from "@/lib/lobby";
 import { createClient } from "@/lib/supabase/server";
 
@@ -23,14 +26,39 @@ export default function HomePage({ searchParams }: PageProps<"/">) {
 async function Market({ searchParams }: Pick<PageProps<"/">, "searchParams">) {
   const { lobby: requested } = await searchParams;
   const supabase = await createClient();
-  const { data } = await supabase
-    .from("lobbies")
-    .select("id, name, status, public_config")
-    .neq("status", "draft")
-    .order("created_at", { ascending: false });
+  const [{ data }, rounds, { data: groups }, viewer] = await Promise.all([
+    supabase
+      .from("lobbies")
+      .select("id, name, status, public_config")
+      .eq("kind", "live")
+      .neq("status", "draft")
+      .order("created_at", { ascending: false }),
+    getStaticRounds(),
+    supabase.from("groups").select("id, name").order("name"),
+    getViewer(),
+  ]);
   const lobbies = data ?? [];
+  const { data: results } = rounds.length
+    ? await supabase
+        .from("lobby_results")
+        .select("lobby_id, group_id, final_pnl, rank")
+        .in("lobby_id", rounds.map((r) => r.id))
+    : { data: [] };
+  const groupNames = new Map((groups ?? []).map((g) => [g.id, g.name]));
+  const roundResults = (id: string) => (results ?? []).filter((r) => r.lobby_id === id);
+  const scoreboard: ScoreboardData = {
+    groups: groups ?? [],
+    columns: rounds.map((r) => ({
+      id: r.id,
+      name: r.name,
+      status: r.status,
+      scores: Object.fromEntries(
+        roundResults(r.id).map((x) => [x.group_id, { score: Number(x.final_pnl), rank: x.rank }]),
+      ),
+    })),
+  };
 
-  if (lobbies.length === 0) {
+  if (lobbies.length === 0 && rounds.length === 0) {
     return (
       <div className="panel p-10 text-center">
         <h1 className="text-xl font-semibold">No market is open yet</h1>
@@ -46,29 +74,59 @@ async function Market({ searchParams }: Pick<PageProps<"/">, "searchParams">) {
     lobbies.find((l) => l.status === "running" || l.status === "paused") ??
     lobbies.find((l) => l.status === "scheduled") ??
     lobbies[0];
-  const config = publicConfig(selected.public_config);
 
   return (
-    <section className="space-y-4">
-      <div className="flex flex-wrap items-center gap-2">
-        {lobbies.map((l) => (
-          <Link
-            key={l.id}
-            href={`/?lobby=${l.id}`}
-            className={`btn ${l.id === selected.id ? "border-accent" : ""}`}
-          >
-            {l.name}
-            <span className={`badge ${STATUS_STYLES[l.status]}`}>{l.status}</span>
-          </Link>
-        ))}
-      </div>
-      <LiveMarket
-        key={selected.id}
-        lobbyId={selected.id}
-        engineUrl={ENGINE_URL}
-        goods={config.goods}
-      />
-    </section>
+    <div className="space-y-10">
+      {selected ? (
+        <section className="space-y-4">
+          <div className="flex flex-wrap items-center gap-2">
+            {lobbies.map((l) => (
+              <Link
+                key={l.id}
+                href={`/?lobby=${l.id}`}
+                className={`btn ${l.id === selected.id ? "border-accent" : ""}`}
+              >
+                {l.name}
+                <span className={`badge ${STATUS_STYLES[l.status]}`}>{l.status}</span>
+              </Link>
+            ))}
+          </div>
+          <LiveMarket
+            key={selected.id}
+            lobbyId={selected.id}
+            lobbyName={selected.name}
+            engineUrl={ENGINE_URL}
+            goods={publicConfig(selected.public_config).goods}
+            scoreboard={scoreboard}
+          />
+        </section>
+      ) : (
+        <Scoreboard {...scoreboard} />
+      )}
+
+      {rounds.length > 0 && (
+        <section className="space-y-4">
+          <div>
+            <h2 className="text-lg font-semibold">Static rounds</h2>
+            <p className="text-sm text-muted">
+              The whole market is published up front. Write code for each round and submit it for a score.
+            </p>
+          </div>
+          <div className="grid gap-4 md:grid-cols-2">
+            {rounds.map((r) => (
+              <StaticRoundCard
+                key={r.id}
+                round={r}
+                leaders={roundResults(r.id)
+                  .map((x) => ({ name: groupNames.get(x.group_id) ?? "?", score: Number(x.final_pnl), rank: x.rank }))
+                  .sort((a, b) => a.rank - b.rank)}
+                codeHref={viewer?.group ? `/g/${viewer.group.slug}/code?round=${r.id}` : null}
+              />
+            ))}
+          </div>
+        </section>
+      )}
+    </div>
   );
 }
 
@@ -84,7 +142,7 @@ async function AdminSection() {
       supabase.from("group_members").select("group_id, user_id, profiles(display_name, email)"),
       supabase
         .from("lobbies")
-        .select("id, name, status, max_groups, public_config, current_tick")
+        .select("id, name, status, max_groups, public_config, current_tick, kind")
         .order("created_at", { ascending: false }),
       supabase.from("lobby_secrets").select("lobby_id, seed::text"),
       supabase.from("lobby_entries").select("lobby_id, group_id, active_submission_id"),

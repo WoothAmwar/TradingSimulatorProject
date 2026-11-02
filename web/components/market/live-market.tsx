@@ -4,17 +4,23 @@ import { useEffect, useRef, useState } from "react";
 import { connectFeed, wsUrl, type Book, type FeedMessage, type LeaderRow, type Trade } from "@/lib/feed";
 import { OrderBook } from "./order-book";
 import { PriceChart, type PriceChartHandle } from "./price-chart";
+import { Scoreboard, type ScoreboardData } from "./scoreboard";
 
 type TapeEntry = { tick: number; price: number; qty: number; side: 1 | -1 };
 
 export function LiveMarket({
   lobbyId,
+  lobbyName,
   engineUrl,
   goods,
+  scoreboard,
 }: {
   lobbyId: string;
+  lobbyName: string;
   engineUrl: string;
   goods: string[];
+  /** Static rounds to show next to this lobby's live scores. */
+  scoreboard: ScoreboardData;
 }) {
   const charts = useRef<Record<string, PriceChartHandle | null>>({});
   const [connected, setConnected] = useState(false);
@@ -116,6 +122,8 @@ export function LiveMarket({
           </ol>
         </div>
       </div>
+
+      <Scoreboard {...scoreboard} live={{ name: lobbyName, status, leaders }} />
     </div>
   );
 }

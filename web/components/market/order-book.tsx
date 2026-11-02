@@ -25,7 +25,7 @@ export function OrderBook({ book, levels = 6 }: { book?: Book; levels?: number }
       </div>
       {asks.map(([p, q]) => row(p, q, "ask"))}
       <div className="num my-1 border-y border-border py-0.5 text-center text-[11px] text-muted">
-        {spread === null ? "—" : `spread ${spread}`}
+        {spread === null ? "—" : `gap ${spread}`}
       </div>
       {bids.map(([p, q]) => row(p, q, "bid"))}
       {!bids.length && !asks.length && (

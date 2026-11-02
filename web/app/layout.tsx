@@ -23,18 +23,28 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
               <span className="num rounded bg-accent px-1.5 text-sm text-black">ACM</span>
               Trading Simulator
             </Link>
-            <Suspense fallback={<div className="h-8 w-24 animate-pulse rounded bg-panel-2" />}>
-              <UserMenu />
-            </Suspense>
+            <div className="flex items-center gap-3">
+              <Link href="/about" className="text-sm text-muted hover:text-foreground">
+                How it works
+              </Link>
+              <Suspense fallback={<div className="h-8 w-24 animate-pulse rounded bg-panel-2" />}>
+                <UserMenu />
+              </Suspense>
+            </div>
           </div>
         </header>
         <main className="mx-auto w-full max-w-7xl flex-1 px-4 py-6">{children}</main>
         <footer className="border-t border-border">
           <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-2 px-4 py-4 text-xs text-muted">
             <span>A practice market for UChicago ACM&apos;s algorithmic trading competitions.</span>
-            <Link href="/privacy" className="hover:text-foreground">
-              Privacy Policy
-            </Link>
+            <div className="flex gap-4">
+              <Link href="/about" className="hover:text-foreground">
+                How it works
+              </Link>
+              <Link href="/privacy" className="hover:text-foreground">
+                Privacy Policy
+              </Link>
+            </div>
           </div>
         </footer>
       </body>

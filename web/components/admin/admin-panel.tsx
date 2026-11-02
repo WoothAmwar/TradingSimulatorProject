@@ -5,6 +5,7 @@ import {
   addAllowlistEmail,
   createGroup,
   createLobby,
+  createStaticRound,
   deleteGroup,
   deleteLobby,
   lobbyAction,
@@ -13,10 +14,12 @@ import {
   rotateInvite,
   setAdmin,
   setLobbyEntry,
+  staticRoundAction,
   type ActionResult,
+  type StaticRoundAction,
 } from "@/app/actions/admin";
 import type { LobbyAction } from "@/lib/engine";
-import { GOOD_PRESETS, STATUS_STYLES, type PublicConfig } from "@/lib/lobby";
+import { GOOD_PRESETS, STATIC_PRESETS, STATUS_STYLES, statusLabel, type PublicConfig } from "@/lib/lobby";
 
 export type AdminData = {
   viewerId: string;
@@ -31,6 +34,7 @@ export type AdminData = {
     id: string;
     name: string;
     status: string;
+    kind: string;
     max_groups: number;
     current_tick: number | null;
     config: PublicConfig;
@@ -74,8 +78,9 @@ export function AdminPanel({ data, engineUrl }: { data: AdminData; engineUrl: st
       </h2>
       <div className="grid gap-6 xl:grid-cols-2">
         <GroupsAdmin groups={data.groups} />
-        <LobbiesAdmin lobbies={data.lobbies} groups={data.groups} />
+        <LobbiesAdmin lobbies={data.lobbies.filter((l) => l.kind === "live")} groups={data.groups} />
       </div>
+      <StaticRoundsAdmin rounds={data.lobbies.filter((l) => l.kind === "static")} />
       <AdminsAdmin data={data} />
     </section>
   );
@@ -188,7 +193,8 @@ function LobbiesAdmin({
 
   return (
     <div className="panel p-4">
-      <h3 className="font-semibold">Lobbies</h3>
+      <h3 className="font-semibold">Live rounds</h3>
+      <p className="mt-1 text-xs text-muted">Run on the engine. Pausing one doesn&apos;t affect static rounds.</p>
       <form
         className="mt-3 grid grid-cols-2 gap-3 md:grid-cols-3"
         action={(form) => exec(() => createLobby(form))}
@@ -218,10 +224,10 @@ function LobbiesAdmin({
           <input name="seed" className="input num" placeholder="random" inputMode="numeric" />
         </div>
         <fieldset className="col-span-2 md:col-span-3">
-          <legend className="label">Goods</legend>
-          {Object.entries(GOOD_PRESETS).map(([good, description]) => (
+          <legend className="label">Good (one per lobby)</legend>
+          {Object.entries(GOOD_PRESETS).map(([good, description], i) => (
             <label key={good} className="flex items-start gap-2 text-sm">
-              <input type="checkbox" name="goods" value={good} defaultChecked className="mt-1" />
+              <input type="radio" name="good" value={good} defaultChecked={i === 0} className="mt-1" />
               <span>
                 <span className="font-medium">{good}</span>{" "}
                 <span className="text-muted">— {description}</span>
@@ -295,6 +301,130 @@ function LobbiesAdmin({
                   </button>
                 );
               })}
+            </div>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+const STATIC_ACTIONS: Record<string, { action: "prepare" | StaticRoundAction; label: string }[]> = {
+  draft: [{ action: "prepare", label: "Build data & publish" }],
+  scheduled: [{ action: "open", label: "Open submissions" }],
+  running: [
+    { action: "pause", label: "Pause submissions" },
+    { action: "close", label: "Close round" },
+  ],
+  paused: [
+    { action: "resume", label: "Resume submissions" },
+    { action: "close", label: "Close round" },
+  ],
+  finished: [],
+};
+
+function StaticRoundsAdmin({ rounds }: { rounds: AdminData["lobbies"] }) {
+  const { pending, error, exec } = useAction();
+  const [showSeed, setShowSeed] = useState<string | null>(null);
+  const [preset, setPreset] = useState<keyof typeof STATIC_PRESETS>("BEST_TIME");
+
+  const act = (round: AdminData["lobbies"][number], action: "prepare" | StaticRoundAction) => {
+    if (action === "close" && !confirm(`Close ${round.name}? Scores become final.`)) return;
+    exec(() => (action === "prepare" ? lobbyAction(round.id, action) : staticRoundAction(round.id, action)));
+  };
+
+  return (
+    <div className="panel p-4">
+      <h3 className="font-semibold">Static rounds</h3>
+      <p className="mt-1 text-xs text-muted">
+        Generated once and published. Each group&apos;s latest submission is its score. Independent of the live
+        round, which you can pause meanwhile.
+      </p>
+      <form
+        className="mt-3 grid grid-cols-2 gap-3 md:grid-cols-4"
+        action={(form) => exec(() => createStaticRound(form))}
+      >
+        <div className="col-span-2">
+          <label className="label">Name</label>
+          <input name="name" className="input" placeholder="Static round 1" required />
+        </div>
+        <div>
+          <label className="label">Ticks</label>
+          <input
+            name="ticks"
+            type="number"
+            className="input"
+            placeholder={String(STATIC_PRESETS[preset].ticks)}
+            min={10}
+            max={20000}
+          />
+        </div>
+        <div>
+          <label className="label">Seed (blank = random)</label>
+          <input name="seed" className="input num" placeholder="random" inputMode="numeric" />
+        </div>
+        <fieldset className="col-span-2 md:col-span-4">
+          <legend className="label">Preset</legend>
+          {Object.entries(STATIC_PRESETS).map(([id, p]) => (
+            <label key={id} className="flex items-start gap-2 text-sm">
+              <input
+                type="radio"
+                name="preset"
+                value={id}
+                checked={preset === id}
+                onChange={() => setPreset(id as keyof typeof STATIC_PRESETS)}
+                className="mt-1"
+              />
+              <span>
+                <span className="font-medium">{p.name}</span> <span className="text-muted">— {p.description}</span>
+              </span>
+            </label>
+          ))}
+        </fieldset>
+        <div className="col-span-2 md:col-span-4">
+          <button className="btn btn-primary" disabled={pending}>
+            Create draft round
+          </button>
+        </div>
+      </form>
+      <ErrorText error={error} />
+
+      <ul className="mt-4 divide-y divide-border">
+        {rounds.map((r) => (
+          <li key={r.id} className="flex flex-wrap items-center justify-between gap-2 py-3">
+            <div className="space-y-1">
+              <div className="flex items-center gap-2">
+                <span className="font-medium">{r.name}</span>
+                <span className={`badge ${STATUS_STYLES[r.status]}`}>{statusLabel("static", r.status)}</span>
+              </div>
+              <p className="num text-xs text-muted">
+                {r.config.preset ? STATIC_PRESETS[r.config.preset].name : "?"} · {r.config.dataset_ticks} ticks ·{" "}
+                <button className="underline" onClick={() => setShowSeed(showSeed === r.id ? null : r.id)}>
+                  {showSeed === r.id ? `seed ${r.seed}` : "show seed"}
+                </button>
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {STATIC_ACTIONS[r.status]?.map(({ action, label }) => (
+                <button
+                  key={action}
+                  className={`btn ${action === "close" ? "btn-danger" : ""}`}
+                  disabled={pending}
+                  onClick={() => act(r, action)}
+                >
+                  {label}
+                </button>
+              ))}
+              <button
+                className="btn btn-danger"
+                disabled={pending}
+                onClick={() =>
+                  confirm(`Delete ${r.name}, its data, its scores and all code written for it?`) &&
+                  exec(() => deleteLobby(r.id))
+                }
+              >
+                Delete
+              </button>
             </div>
           </li>
         ))}

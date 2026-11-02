@@ -10,6 +10,10 @@ declare
   gb uuid;
   lobby uuid;
   open_lobby uuid;
+  round_open uuid;    -- static round accepting scores
+  round_draft uuid;   -- static round not published yet
+  sub_a uuid;         -- team A's code for round_open
+  sub_b uuid;         -- team B's code for round_open
   files text[];
   token_a text;
   token_b text;
@@ -32,13 +36,23 @@ begin
   insert into public.lobbies (name, status) values ('Draft lobby', 'draft') returning id into lobby;
   insert into public.lobby_secrets (lobby_id, model_config) values (lobby, '{}');
   insert into public.lobbies (name, status) values ('Open lobby', 'scheduled') returning id into open_lobby;
+  insert into public.lobbies (name, status, kind) values ('Static open', 'running', 'static')
+    returning id into round_open;
+  insert into public.lobbies (name, status, kind) values ('Static draft', 'draft', 'static')
+    returning id into round_draft;
+  insert into public.datasets (lobby_id, ticks, manifest) values (round_open, 100, '{}');
+  insert into public.submissions (group_id, author_id, source, lobby_id)
+    values (ga, alice, 'a', round_open) returning id into sub_a;
+  insert into public.submissions (group_id, author_id, source, lobby_id)
+    values (gb, bob, 'b', round_open) returning id into sub_b;
+  insert into public.lobby_entries (lobby_id, group_id) values (open_lobby, ga);
   files := array[lobby || '/manifest.json', open_lobby || '/manifest.json'];
   insert into storage.objects (bucket_id, name) select 'datasets', unnest(files);
 
   -- Alice ------------------------------------------------------------------------------------
   perform set_config('role', 'authenticated', true);
   perform set_config('request.jwt.claims', json_build_object('sub', alice, 'role', 'authenticated')::text, true);
-  select count(*) into n from public.submissions;            r := r || ' alice.subs=' || n;      -- 1
+  select count(*) into n from public.submissions;            r := r || ' alice.subs=' || n;      -- 2 (live + round code)
   select count(*) into n from public.submissions where group_id = gb; r := r || ' alice.subsB=' || n; -- 0
   select count(*) into n from public.profiles;               r := r || ' alice.profiles=' || n;  -- 1
   select count(*) into n from public.group_members;          r := r || ' alice.members=' || n;   -- 1
@@ -56,6 +70,35 @@ begin
     insert into public.submissions (group_id, source) values (ga, 'ok');
     r := r || ' alice.insertA=ok';
   exception when others then r := r || ' alice.insertA=FAILED:' || sqlerrm; end;
+  begin
+    insert into public.submissions (group_id, source, lobby_id) values (ga, 'x', open_lobby);
+    r := r || ' alice.codeForLive=ALLOWED';
+  exception when others then r := r || ' alice.codeForLive=denied'; end;
+  begin
+    insert into public.submissions (group_id, source, lobby_id) values (ga, 'x', round_draft);
+    r := r || ' alice.codeForDraft=ALLOWED';
+  exception when others then r := r || ' alice.codeForDraft=denied'; end;
+  begin
+    insert into public.submissions (group_id, source, lobby_id) values (ga, 'ok', round_open);
+    r := r || ' alice.codeForRound=ok';
+  exception when others then r := r || ' alice.codeForRound=FAILED:' || sqlerrm; end;
+  r := r || ' alice.score=' || public.submit_round_score(round_open, sub_a, 50, 100, 2);   -- 1
+  begin
+    perform public.submit_round_score(round_open, sub_b, 999, 100, 2);
+    r := r || ' alice.scoreB=ALLOWED';
+  exception when others then r := r || ' alice.scoreB=denied'; end;
+  begin
+    perform public.submit_round_score(round_open, sub_a, 50, 99, 2);
+    r := r || ' alice.partialRun=ALLOWED';
+  exception when others then r := r || ' alice.partialRun=denied'; end;
+  begin
+    perform public.submit_round_score(open_lobby, sub_a, 50, 100, 2);
+    r := r || ' alice.scoreLive=ALLOWED';
+  exception when others then r := r || ' alice.scoreLive=denied'; end;
+  begin
+    perform public.set_active_submission(open_lobby, sub_a);
+    r := r || ' alice.activateRoundCode=ALLOWED';
+  exception when others then r := r || ' alice.activateRoundCode=denied'; end;
   begin
     update public.profiles set is_admin = true where id = alice;
     r := r || ' alice.selfPromote=ALLOWED';
@@ -76,7 +119,10 @@ begin
   -- Carol joins team B with its invite token ------------------------------------------------
   perform set_config('request.jwt.claims', json_build_object('sub', carol, 'role', 'authenticated')::text, true);
   r := r || ' carol.join=' || public.join_group(token_b);                                         -- team-b
-  select count(*) into n from public.submissions;            r := r || ' carol.subs=' || n;      -- 1 (B's)
+  select count(*) into n from public.submissions;            r := r || ' carol.subs=' || n;      -- 2 (B's)
+  r := r || ' carol.score=' || public.submit_round_score(round_open, sub_b, 80, 100, 3);   -- 1
+  r := r || ' carol.rescore=' || public.submit_round_score(round_open, sub_b, 10, 100, 1); -- 2 (latest counts)
+  select count(*) into n from public.round_attempts;         r := r || ' carol.attempts=' || n;  -- 2 (B's)
   begin
     perform public.join_group('not-a-token');
     r := r || ' carol.badToken=ALLOWED';
@@ -88,6 +134,7 @@ begin
   select count(*) into n from public.lobbies where id in (lobby, open_lobby); r := r || ' admin.lobbies=' || n;   -- 2
   select count(*) into n from public.group_invites where group_id in (ga, gb); r := r || ' admin.invites=' || n;   -- 2
   select count(*) into n from storage.objects where name = any(files); r := r || ' admin.datasets=' || n; -- 2
+  select count(*) into n from public.round_attempts where lobby_id = round_open; r := r || ' admin.attempts=' || n; -- 3
 
   -- Anonymous --------------------------------------------------------------------------------
   perform set_config('role', 'anon', true);
@@ -95,6 +142,11 @@ begin
   select count(*) into n from public.groups where id in (ga, gb); r := r || ' anon.groups=' || n;     -- 2
   select count(*) into n from public.lobbies where id in (lobby, open_lobby); r := r || ' anon.lobbies=' || n;    -- 1
   select count(*) into n from storage.objects where name = any(files); r := r || ' anon.datasets=' || n; -- 0
+  select count(*) into n from public.lobby_results where lobby_id = round_open; r := r || ' anon.roundResults=' || n; -- 2
+  begin
+    select count(*) into n from public.round_attempts;
+    r := r || ' anon.attempts=ALLOWED';
+  exception when others then r := r || ' anon.attempts=denied'; end;
   begin
     select count(*) into n from public.submissions;
     r := r || ' anon.subs=ALLOWED';

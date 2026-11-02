@@ -3,7 +3,8 @@
 Two layers:
 
 * Browser-safe (standard library only, also shipped to Pyodide for in-browser backtests):
-  ``types``, ``book``, ``exchange``, ``driver``, ``protocol``, ``config``, ``backtest``.
+  ``types``, ``book``, ``exchange``, ``driver``, ``protocol``, ``config``, ``series``,
+  ``backtest``.
 * Server-only (needs NumPy and the secret lobby seed, never shipped to clients):
-  ``rng``, ``models``, ``flow``, ``simulator``.
+  ``rng``, ``models``, ``flow``, ``simulator``, ``dataset``, ``static_rounds``.
 """

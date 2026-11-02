@@ -159,6 +159,7 @@ export type Database = {
           current_tick: number | null
           finished_at: string | null
           id: string
+          kind: Database["public"]["Enums"]["round_kind"]
           max_groups: number
           name: string
           public_config: Json
@@ -171,6 +172,7 @@ export type Database = {
           current_tick?: number | null
           finished_at?: string | null
           id?: string
+          kind?: Database["public"]["Enums"]["round_kind"]
           max_groups?: number
           name: string
           public_config?: Json
@@ -183,6 +185,7 @@ export type Database = {
           current_tick?: number | null
           finished_at?: string | null
           id?: string
+          kind?: Database["public"]["Enums"]["round_kind"]
           max_groups?: number
           name?: string
           public_config?: Json
@@ -508,6 +511,71 @@ export type Database = {
         }
         Relationships: []
       }
+      round_attempts: {
+        Row: {
+          created_at: string
+          fills: number
+          group_id: string
+          id: number
+          lobby_id: string
+          score: number
+          submission_id: string | null
+          ticks: number
+          user_id: string | null
+        }
+        Insert: {
+          created_at?: string
+          fills: number
+          group_id: string
+          id?: never
+          lobby_id: string
+          score: number
+          submission_id?: string | null
+          ticks: number
+          user_id?: string | null
+        }
+        Update: {
+          created_at?: string
+          fills?: number
+          group_id?: string
+          id?: never
+          lobby_id?: string
+          score?: number
+          submission_id?: string | null
+          ticks?: number
+          user_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "round_attempts_group_id_fkey"
+            columns: ["group_id"]
+            isOneToOne: false
+            referencedRelation: "groups"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "round_attempts_lobby_id_fkey"
+            columns: ["lobby_id"]
+            isOneToOne: false
+            referencedRelation: "lobbies"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "round_attempts_submission_id_fkey"
+            columns: ["submission_id"]
+            isOneToOne: false
+            referencedRelation: "submissions"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "round_attempts_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       submissions: {
         Row: {
           author_id: string | null
@@ -515,6 +583,7 @@ export type Database = {
           group_id: string
           id: string
           language: Database["public"]["Enums"]["bot_language"]
+          lobby_id: string | null
           source: string
           source_sha256: string | null
           title: string
@@ -525,6 +594,7 @@ export type Database = {
           group_id: string
           id?: string
           language?: Database["public"]["Enums"]["bot_language"]
+          lobby_id?: string | null
           source: string
           source_sha256?: string | null
           title?: string
@@ -535,6 +605,7 @@ export type Database = {
           group_id?: string
           id?: string
           language?: Database["public"]["Enums"]["bot_language"]
+          lobby_id?: string | null
           source?: string
           source_sha256?: string | null
           title?: string
@@ -552,6 +623,13 @@ export type Database = {
             columns: ["group_id"]
             isOneToOne: false
             referencedRelation: "groups"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "submissions_lobby_id_fkey"
+            columns: ["lobby_id"]
+            isOneToOne: false
+            referencedRelation: "lobbies"
             referencedColumns: ["id"]
           },
         ]
@@ -584,10 +662,21 @@ export type Database = {
         Args: { p_user: string; p_value: boolean }
         Returns: undefined
       }
+      submit_round_score: {
+        Args: {
+          p_fills: number
+          p_lobby: string
+          p_score: number
+          p_submission: string
+          p_ticks: number
+        }
+        Returns: number
+      }
     }
     Enums: {
       bot_language: "python" | "java" | "c" | "cpp" | "go"
       lobby_status: "draft" | "scheduled" | "running" | "paused" | "finished"
+      round_kind: "live" | "static"
     }
     CompositeTypes: {
       [_ in never]: never
@@ -607,6 +696,7 @@ export const Constants = {
     Enums: {
       bot_language: ["python", "java", "c", "cpp", "go"],
       lobby_status: ["draft", "scheduled", "running", "paused", "finished"],
+      round_kind: ["live", "static"],
     },
   },
 } as const

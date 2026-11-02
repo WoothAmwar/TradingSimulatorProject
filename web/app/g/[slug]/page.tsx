@@ -1,8 +1,8 @@
 import Link from "next/link";
 import { Suspense } from "react";
 import { ActiveSubmissionPicker } from "@/components/group/active-submission-picker";
-import { getGroupContext, getGroupLobbies } from "@/lib/group";
-import { STATUS_STYLES } from "@/lib/lobby";
+import { getGroupContext, getGroupLobbies, getStaticRounds } from "@/lib/group";
+import { STATIC_PRESETS, STATUS_STYLES, statusLabel } from "@/lib/lobby";
 import { languageLabel } from "@/lib/templates";
 
 export default function GroupOverviewPage({ params }: PageProps<"/g/[slug]">) {
@@ -16,26 +16,111 @@ export default function GroupOverviewPage({ params }: PageProps<"/g/[slug]">) {
 async function Overview({ params }: Pick<PageProps<"/g/[slug]">, "params">) {
   const { slug } = await params;
   const { group, supabase } = await getGroupContext(slug);
-  const [{ data: roster }, { data: submissions }, lobbies] = await Promise.all([
+  const [{ data: roster }, { data: submissions }, lobbies, rounds, { data: attempts }] = await Promise.all([
     supabase.rpc("get_group_roster", { p_group: group.id }),
     supabase
       .from("submissions")
-      .select("id, title, language, author_id, created_at, source_sha256")
+      .select("id, title, language, author_id, created_at, source_sha256, lobby_id")
       .eq("group_id", group.id)
       .order("created_at", { ascending: false }),
     getGroupLobbies(group.id),
+    getStaticRounds(),
+    supabase
+      .from("round_attempts")
+      .select("lobby_id, created_at")
+      .eq("group_id", group.id)
+      .order("created_at", { ascending: false }),
   ]);
+  const roundIds = [...lobbies.map((l) => l.id), ...rounds.map((r) => r.id)];
+  const { data: results } = roundIds.length
+    ? await supabase.from("lobby_results").select("lobby_id, group_id, final_pnl, rank").in("lobby_id", roundIds)
+    : { data: [] };
   const names = new Map((roster ?? []).map((m) => [m.user_id, m.display_name]));
-  const options = (submissions ?? []).map((s) => ({
-    id: s.id,
-    label: `${s.title} · ${languageLabel(s.language)} · ${names.get(s.author_id ?? "") ?? "unknown"}`,
-  }));
+  const roundNames = new Map(rounds.map((r) => [r.id, r.name]));
+  const options = (submissions ?? [])
+    .filter((s) => s.lobby_id === null)
+    .map((s) => ({
+      id: s.id,
+      label: `${s.title} · ${languageLabel(s.language)} · ${names.get(s.author_id ?? "") ?? "unknown"}`,
+    }));
+  const scoreFor = (lobbyId: string) => {
+    const rows = (results ?? []).filter((r) => r.lobby_id === lobbyId);
+    const own = rows.find((r) => r.group_id === group.id);
+    return own ? { score: Number(own.final_pnl), rank: own.rank, of: rows.length } : null;
+  };
+  const attemptsFor = (lobbyId: string) => (attempts ?? []).filter((a) => a.lobby_id === lobbyId);
+  const scoreTiles: {
+    id: string;
+    name: string;
+    kind: "live" | "static";
+    result: ReturnType<typeof scoreFor>;
+    note: string;
+    href?: string;
+  }[] = [
+    ...lobbies.map((l) => {
+      const live = l.status === "running" || l.status === "paused";
+      return {
+        id: l.id,
+        name: l.name,
+        kind: "live" as const,
+        result: scoreFor(l.id),
+        note: live ? "Live now: see the leaderboard" : `Lobby ${l.status}`,
+        href: live ? `/?lobby=${l.id}` : undefined,
+      };
+    }),
+    ...rounds.map((r) => {
+      const last = attemptsFor(r.id)[0];
+      return {
+        id: r.id,
+        name: r.name,
+        kind: "static" as const,
+        result: scoreFor(r.id),
+        note: last ? `Last submitted ${new Date(last.created_at).toLocaleString()}` : "Not submitted yet",
+      };
+    }),
+  ];
 
   return (
     <div className="grid gap-6 lg:grid-cols-[1fr_320px]">
       <div className="space-y-6">
         <section className="panel p-4">
-          <h2 className="font-semibold">Lobbies</h2>
+          <h2 className="font-semibold">Scores</h2>
+          {scoreTiles.length === 0 && <p className="mt-2 text-sm text-muted">No rounds yet.</p>}
+          <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+            {scoreTiles.map((t) => (
+              <div key={t.id} className="rounded-md border border-border bg-panel-2 p-3">
+                <div className="flex items-center justify-between gap-2 text-xs text-muted">
+                  <span className="truncate font-medium text-foreground">{t.name}</span>
+                  <span className="uppercase tracking-wide">{t.kind}</span>
+                </div>
+                {t.result ? (
+                  <div className="mt-1 flex items-baseline gap-2">
+                    <span className={`num text-xl ${t.result.score >= 0 ? "text-bid" : "text-ask"}`}>
+                      {Math.round(t.result.score).toLocaleString()}
+                    </span>
+                    <span className="num text-xs text-muted">
+                      #{t.result.rank} of {t.result.of}
+                    </span>
+                  </div>
+                ) : (
+                  <div className="num mt-1 text-xl text-muted">—</div>
+                )}
+                <p className="mt-1 text-xs text-muted">
+                  {t.href ? (
+                    <Link href={t.href} className="underline">
+                      {t.note}
+                    </Link>
+                  ) : (
+                    t.note
+                  )}
+                </p>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        <section className="panel p-4">
+          <h2 className="font-semibold">Live rounds</h2>
           {lobbies.length === 0 && (
             <p className="mt-2 text-sm text-muted">An admin hasn&apos;t entered your group in a lobby yet.</p>
           )}
@@ -57,9 +142,33 @@ async function Overview({ params }: Pick<PageProps<"/g/[slug]">, "params">) {
             ))}
           </ul>
           <p className="mt-2 text-xs text-muted">
-            One active submission per lobby. Any member can change it, and any member can run it from
-            Live trading.
+            One active submission per lobby. Any member can change it or run it from Live trading.
           </p>
+        </section>
+
+        <section className="panel p-4">
+          <h2 className="font-semibold">Static rounds</h2>
+          {rounds.length === 0 && <p className="mt-2 text-sm text-muted">No static rounds are published yet.</p>}
+          <ul className="mt-3 divide-y divide-border">
+            {rounds.map((r) => (
+              <li key={r.id} className="flex flex-wrap items-center justify-between gap-3 py-3">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="font-medium">{r.name}</span>
+                    <span className={`badge ${STATUS_STYLES[r.status]}`}>{statusLabel("static", r.status)}</span>
+                  </div>
+                  <p className="text-xs text-muted">
+                    {STATIC_PRESETS[r.preset].name} · {attemptsFor(r.id).length} submission
+                    {attemptsFor(r.id).length === 1 ? "" : "s"} scored
+                  </p>
+                </div>
+                <Link href={`/g/${slug}/code?round=${r.id}`} className="btn">
+                  Write code
+                </Link>
+              </li>
+            ))}
+          </ul>
+          <p className="mt-2 text-xs text-muted">Each round has its own code. Your latest submission is your score.</p>
         </section>
 
         <section className="panel p-4">
@@ -80,6 +189,9 @@ async function Overview({ params }: Pick<PageProps<"/g/[slug]">, "params">) {
                     <Link href={`/g/${slug}/s/${s.id}`} className="font-medium hover:text-accent">
                       {s.title}
                     </Link>
+                  </td>
+                  <td className="text-muted">
+                    {s.lobby_id ? (roundNames.get(s.lobby_id) ?? "Static round") : "Live"}
                   </td>
                   <td className="text-muted">{languageLabel(s.language)}</td>
                   <td className="text-muted">{names.get(s.author_id ?? "") ?? "former member"}</td>

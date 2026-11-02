@@ -1,5 +1,5 @@
 // Bridges the browser runtime and the user's Trader class (compiled as one translation unit with
-// user_trader.cpp). Parses the flat state text and returns "good price qty ioc" lines.
+// user_trader.cpp). Parses the flat state text and returns "price qty" lines.
 #include <cstdio>
 #include <sstream>
 #include <string>
@@ -14,30 +14,41 @@ constexpr int kInputCapacity = 1 << 20;
 char in_buf[kInputCapacity];
 std::string out_buf;
 Trader* trader = nullptr;
+// "Best time" rounds send every tick's price once, on the first tick; bots see it every tick.
+std::vector<int> price_cache;
 
-void read_levels(std::istringstream& in, std::vector<Level>& levels) {
+// Reads "<tag> n price qty price qty ..." into items.
+template <typename T>
+void read_pairs(std::istringstream& in, std::vector<T>& items) {
     std::string tag;
     int n = 0;
     in >> tag >> n;
-    levels.resize(n > 0 ? n : 0);
-    for (auto& level : levels) in >> level.price >> level.qty;
+    items.resize(n > 0 ? n : 0);
+    for (auto& item : items) in >> item.price >> item.qty;
 }
 
 State parse_state(const char* text) {
     std::istringstream in(text);
     State s;
     std::string tag;
-    int goods = 0;
-    in >> tag >> s.tick >> s.cash >> goods;
-    s.goods.resize(goods > 0 ? goods : 0);
-    for (auto& g : s.goods) {
-        in >> tag >> g.name >> g.position >> g.limit;
-        read_levels(in, g.bids);
-        read_levels(in, g.asks);
+    in >> tag >> s.tick >> s.cash >> s.position >> s.limit;
+    read_pairs(in, s.bids);
+    read_pairs(in, s.asks);
+    read_pairs(in, s.trades);
+    in >> std::ws;
+    if (in.peek() == 'P') {
         int n = 0;
         in >> tag >> n;
-        g.trades.resize(n > 0 ? n : 0);
-        for (auto& t : g.trades) in >> t.price >> t.qty >> t.side;
+        price_cache.resize(n > 0 ? n : 0);
+        for (auto& p : price_cache) in >> p;
+    }
+    s.prices = price_cache;
+    if (!s.bids.empty() && !s.asks.empty()) {
+        s.price = (s.bids[0].price + s.asks[0].price) / 2.0;
+    } else if (!s.bids.empty()) {
+        s.price = s.bids[0].price;
+    } else if (!s.asks.empty()) {
+        s.price = s.asks[0].price;
     }
     return s;
 }
@@ -60,12 +71,7 @@ EXPORT("bot_tick") const char* bot_tick(int len) {
     std::cerr.flush();
     std::ostringstream out;
     for (const auto& o : orders) {
-        for (size_t i = 0; i < state.goods.size(); i++) {
-            if (state.goods[i].name == o.good && o.qty != 0) {
-                out << i << ' ' << o.price << ' ' << o.qty << ' ' << (o.ioc ? 1 : 0) << '\n';
-                break;
-            }
-        }
+        if (o.qty != 0) out << o.price << ' ' << o.qty << '\n';
     }
     out_buf = out.str();
     return out_buf.c_str();
