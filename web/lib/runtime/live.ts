@@ -19,8 +19,8 @@ export type LiveEvent =
   | { type: "error"; message: string }
   | { type: "closed"; reason: string };
 
-// Close codes after which reconnecting would not help.
-const FINAL_CODES = new Set([1000, 4001, 4401, 4403, 4404]);
+// Close codes after which reconnecting would not help (1009: a response over the engine's size limit).
+const FINAL_CODES = new Set([1000, 1009, 4001, 4401, 4403, 4404]);
 const HANG_MS = 15_000;
 
 /**

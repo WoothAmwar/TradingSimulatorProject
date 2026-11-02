@@ -103,6 +103,10 @@ def create_app(store: Store, verifier: Verifier, settings: Settings) -> FastAPI:
             await _close(ws, 4403, "you are not in a group")
             return
         runner = await manager.viewer_runner(lobby_id)
+        if runner is None and lobby_id in manager.recovering:
+            # Still being rebuilt after a restart; 1013 isn't final, so the bot reconnects.
+            await _close(ws, 1013, "lobby is recovering; try again shortly")
+            return
         if runner is None or runner.status == "finished":
             await _close(ws, 4404, "lobby is not open for trading")
             return
@@ -120,6 +124,8 @@ def create_app(store: Store, verifier: Verifier, settings: Settings) -> FastAPI:
                     msg = await ws.receive_json()
                 except json.JSONDecodeError:
                     continue
+                if runner.traders.get(group_id) is not trader:
+                    break  # dropped as too slow, or replaced: stop accepting its orders
                 if isinstance(msg, dict):
                     notice = runner.handle_trader_message(group_id, msg)
                     if notice is not None:
