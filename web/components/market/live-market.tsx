@@ -105,7 +105,8 @@ export function LiveMarket({
         </div>
 
         <div className="panel h-fit p-3">
-          <h3 className="mb-2 font-semibold">Leaderboard</h3>
+          <h3 className="font-semibold">Leaderboard</h3>
+          <p className="mb-2 text-xs text-muted">Units still held count at the current price.</p>
           {leaders.length === 0 && <p className="text-sm text-muted">No trading yet.</p>}
           <ol className="space-y-1">
             {leaders.map((row, i) => (
@@ -113,6 +114,7 @@ export function LiveMarket({
                 <span>
                   <span className="num mr-2 text-muted">{i + 1}</span>
                   {row.name}
+                  {row.online === false && <span className="ml-1.5 text-xs text-muted">bot off</span>}
                 </span>
                 <span className={`num ${row.pnl >= 0 ? "text-bid" : "text-ask"}`}>
                   {Math.round(row.pnl).toLocaleString()}

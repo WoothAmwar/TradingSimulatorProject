@@ -6,7 +6,11 @@ export type ConsoleLine = { text: string; kind: "log" | "info" | "error" };
 
 export function ConsoleView({ lines, height = "16rem" }: { lines: ConsoleLine[]; height?: string }) {
   const end = useRef<HTMLDivElement>(null);
-  useEffect(() => end.current?.scrollIntoView({ block: "nearest" }), [lines]);
+  // Block body: newer browsers return a Promise from scrollIntoView, which React would take for a
+  // cleanup function and then fail to call.
+  useEffect(() => {
+    end.current?.scrollIntoView({ block: "nearest" });
+  }, [lines]);
   return (
     <div
       className="num overflow-y-auto rounded-md border border-border bg-background p-2 text-xs leading-relaxed"

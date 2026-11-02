@@ -128,13 +128,18 @@ def test_full_lobby_lifecycle():
                 t2.send_json({"type": "orders", "tick": s2["tick"], "response": taker(s2["state"])})
             assert seen_ticks == list(range(K, K + LIVE))
 
-            assert next_of(viewer, "tick")["tick"] >= K
+            first = next_of(viewer, "tick")
+            assert first["tick"] == K
+            assert [r["online"] for r in first["leaderboard"]] == [True, True]
             final = next_of(viewer, "status")
             while final["status"] != "finished":
                 final = next_of(viewer, "status")
             assert [r["name"] for r in final["leaderboard"]] != []
 
         assert store.lobbies[LOBBY].status == "finished"
+        # Bots disconnecting after the end must not replace the final (fair-value) leaderboard.
+        final_board = client.app.state.manager.runners[LOBBY].leaderboard
+        assert final_board == final["leaderboard"] and "online" not in final_board[0]
         results = store.results_rows[LOBBY]
         assert sorted(r["group_id"] for r in results) == ["g1", "g2"]
         assert [r["rank"] for r in results] == [1, 2]
@@ -193,6 +198,7 @@ def test_recovery_replays_to_identical_state():
         assert client.post(f"/admin/lobbies/{LOBBY}/pause", headers=ADMIN).status_code == 200
         time.sleep(TICK_MS / 1000 * 2)  # let the in-flight tick finish
         runner1 = app1.state.manager.runners[LOBBY]
+        assert not any(r["online"] for r in runner1.leaderboard)  # g1's bot disconnected
     # Leaving the client shuts the instance down: it flushes, detaches and releases the lease.
     assert store.lobbies[LOBBY].status == "paused"
     acct1 = runner1.sim.driver.exchange.accounts["g1"]

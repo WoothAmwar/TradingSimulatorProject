@@ -256,6 +256,7 @@ class LobbyRunner:
     async def add_trader(self, trader: Trader) -> None:
         old = self.traders.get(trader.group_id)
         self.traders[trader.group_id] = trader
+        self._update_leaderboard()
         if old is not None:
             await self._close(old.socket, 4001, "Another member started your group's bot")
         await trader.socket.send_json(
@@ -275,6 +276,8 @@ class LobbyRunner:
         if self.traders.get(trader.group_id) is not trader:
             return
         del self.traders[trader.group_id]
+        if not self._finished:
+            self._update_leaderboard()
         # Cancel-on-disconnect goes through a recorded batch so replays stay deterministic.
         if self.status in ("running", "paused"):
             cancel = [CancelAll(trader.group_id)]
@@ -342,8 +345,10 @@ class LobbyRunner:
         return acct.cash + sum(q * marks.get(g, 0.0) for g, q in acct.position.items())
 
     def _update_leaderboard(self) -> None:
+        # "online": the group's bot is connected. Offline groups keep their units, so their
+        # score still moves with the price.
         rows = [
-            {"group_id": g, "name": n, "pnl": self._pnl(g, self.marks)}
+            {"group_id": g, "name": n, "pnl": self._pnl(g, self.marks), "online": g in self.traders}
             for g, n in self.groups.items()
         ]
         self.leaderboard = sorted(rows, key=lambda r: r["pnl"], reverse=True)

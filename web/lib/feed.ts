@@ -3,7 +3,8 @@
 export type Level = [price: number, qty: number];
 export type Book = { bids: Level[]; asks: Level[] };
 export type Trade = [price: number, qty: number, aggressor: 1 | -1];
-export type LeaderRow = { group_id: string; name: string; pnl: number };
+// `online`: the group's bot is connected (sent while the lobby runs, not in final results).
+export type LeaderRow = { group_id: string; name: string; pnl: number; online?: boolean };
 
 export type SnapshotMessage = {
   type: "snapshot";
