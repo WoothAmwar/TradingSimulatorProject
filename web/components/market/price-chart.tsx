@@ -3,6 +3,8 @@
 import {
   createChart,
   LineSeries,
+  type ChartOptions,
+  type DeepPartial,
   type IChartApi,
   type ISeriesApi,
   type UTCTimestamp,
@@ -15,7 +17,19 @@ export type PriceChartHandle = {
 };
 
 // Ticks are plotted as the chart's "time" and formatted back as tick numbers.
-const asTime = (tick: number) => tick as UTCTimestamp;
+export const asTime = (tick: number) => tick as UTCTimestamp;
+
+export const CHART_OPTIONS: DeepPartial<ChartOptions> = {
+  autoSize: true,
+  layout: { background: { color: "transparent" }, textColor: "#8b93a7" },
+  grid: { vertLines: { color: "#1b2230" }, horzLines: { color: "#1b2230" } },
+  rightPriceScale: { borderColor: "#232b3b" },
+  timeScale: {
+    borderColor: "#232b3b",
+    tickMarkFormatter: (time: number) => String(time),
+  },
+  localization: { timeFormatter: (time: number) => `tick ${time}` },
+};
 
 export function PriceChart({ ref, height = 260 }: { ref: Ref<PriceChartHandle>; height?: number }) {
   const container = useRef<HTMLDivElement>(null);
@@ -25,17 +39,7 @@ export function PriceChart({ ref, height = 260 }: { ref: Ref<PriceChartHandle>; 
 
   useEffect(() => {
     if (!container.current) return;
-    const chart = createChart(container.current, {
-      autoSize: true,
-      layout: { background: { color: "transparent" }, textColor: "#8b93a7" },
-      grid: { vertLines: { color: "#1b2230" }, horzLines: { color: "#1b2230" } },
-      rightPriceScale: { borderColor: "#232b3b" },
-      timeScale: {
-        borderColor: "#232b3b",
-        tickMarkFormatter: (time: number) => String(time),
-      },
-      localization: { timeFormatter: (time: number) => `tick ${time}` },
-    });
+    const chart = createChart(container.current, CHART_OPTIONS);
     seriesRef.current = chart.addSeries(LineSeries, { color: "#f0b429", lineWidth: 2 });
     chartRef.current = chart;
     return () => {

@@ -2,6 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Suspense } from "react";
 import { CodeEditor } from "@/components/code/code-editor";
+import { LocalTime } from "@/components/local-time";
 import { getGroupContext } from "@/lib/group";
 import { languageLabel } from "@/lib/templates";
 
@@ -34,7 +35,7 @@ async function Submission({ params }: Pick<PageProps<"/g/[slug]/s/[id]">, "param
           <p className="text-sm text-muted">
             {round ? `Static round: ${round.name}` : "Live market"} · {languageLabel(submission.language)} ·{" "}
             {author ?? "former member"} ·{" "}
-            {new Date(submission.created_at).toLocaleString()} ·{" "}
+            <LocalTime iso={submission.created_at} /> ·{" "}
             <span className="num">sha256 {submission.source_sha256?.slice(0, 12)}</span>
           </p>
         </div>

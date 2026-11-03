@@ -4,6 +4,9 @@ import os
 import socket
 import uuid
 from dataclasses import dataclass
+from pathlib import Path
+
+from .sandbox import DEFAULT_PYTHON_DIR
 
 
 @dataclass(frozen=True)
@@ -13,6 +16,8 @@ class Settings:
     allowed_origins: tuple[str, ...]  # empty = allow any (local development)
     instance_id: str
     lease_ttl_seconds: int = 20
+    python_dir: Path = DEFAULT_PYTHON_DIR  # CPython for WASI, which runs Python bots
+    public_url: str | None = None  # Render's RENDER_EXTERNAL_URL; see EngineManager._keep_awake
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -23,6 +28,8 @@ class Settings:
             allowed_origins=tuple(o.strip().rstrip("/") for o in origins.split(",") if o.strip()),
             instance_id=os.environ.get("RENDER_INSTANCE_ID")
             or f"{socket.gethostname()}-{uuid.uuid4().hex[:8]}",
+            python_dir=Path(os.environ.get("WASI_PYTHON_DIR") or DEFAULT_PYTHON_DIR),
+            public_url=(os.environ.get("RENDER_EXTERNAL_URL") or "").rstrip("/") or None,
         )
 
     def origin_allowed(self, origin: str | None) -> bool:

@@ -127,7 +127,11 @@ export default function AboutPage() {
         <h3 className="font-semibold">Every tick, in every round</h3>
         <TickTimeline />
         <ul className="max-w-3xl list-disc space-y-1 pl-5 text-sm">
-          <li>An offer stays on the market until someone takes it or your next answer replaces it.</li>
+          <li>
+            An offer stays on the market until someone takes it or your next answer replaces it. Sending the same
+            offer again keeps its place in line: at one price, the oldest offer trades first.
+          </li>
+          <li>Your bot sees the market without its own offers.</li>
           <li>
             Computer traders take part too: one always offers to buy and sell, others trade at random, and one knows
             where the price is heading.
@@ -135,6 +139,10 @@ export default function AboutPage() {
           <li>
             You can&apos;t own more than <code>state.limit</code> units, or owe more than that. Orders that could
             break the limit are refused.
+          </li>
+          <li>
+            A buy priced more than 1% above the current price is moved down to that 1% mark (a sell, up to 1% below),
+            so one stray order can&apos;t trade at an absurd price.
           </li>
         </ul>
       </Section>
@@ -212,7 +220,7 @@ export default function AboutPage() {
             On <strong>Overview</strong>, choose it as your team&apos;s bot for the live round.
           </li>
           <li>
-            When the live round starts, press start in <strong>Live trading</strong> and keep that tab open.
+            During the live round the exchange runs it for you; watch it in <strong>Live trading</strong>.
           </li>
           <li>
             For static rounds, pick the round in the editor and <strong>Save &amp; submit</strong> while it&apos;s open.

@@ -1,174 +1,125 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { appendLines, ConsoleView, type ConsoleLine } from "@/components/code/console-view";
-import { startBot } from "@/lib/runtime/bots";
-import { LiveSession, type LiveEvent } from "@/lib/runtime/live";
-import type { RuntimeWorker } from "@/lib/runtime/sandbox";
+import { watchBot, type BotFill, type BotInfo, type BotStats, type MonitorMessage } from "@/lib/bot-monitor";
 import { createClient } from "@/lib/supabase/client";
 import { STATUS_STYLES } from "@/lib/lobby";
-import { languageLabel, type Language } from "@/lib/templates";
+import { languageLabel } from "@/lib/templates";
 
 export type LiveLobby = {
   id: string;
   name: string;
   status: string;
-  active: { id: string; title: string; language: Language; source: string } | null;
+  active: { id: string; title: string; language: string } | null;
 };
 
-type Stats = {
+type View = {
   connected: boolean;
+  lobbyStatus: string | null;
   tick: number | null;
+  bot: BotInfo | null;
+  stats: BotStats;
   pnl: number;
   position: Record<string, number>;
-  answered: number;
-  missed: number;
-  rejects: number;
-  avgMs: number;
-  fills: { tick: number; good: string; price: number; qty: number }[];
+  fills: BotFill[];
+  lines: ConsoleLine[];
+  closedReason: string | null;
 };
 
-const EMPTY: Stats = {
+const EMPTY: View = {
   connected: false,
+  lobbyStatus: null,
   tick: null,
+  bot: null,
+  stats: { answered: 0, missed: 0, rejects: 0, avg_ms: 0 },
   pnl: 0,
   position: {},
-  answered: 0,
-  missed: 0,
-  rejects: 0,
-  avgMs: 0,
   fills: [],
+  lines: [],
+  closedReason: null,
 };
+
+function reduce(v: View, msg: MonitorMessage): View {
+  switch (msg.type) {
+    case "snapshot":
+      return {
+        ...v,
+        lobbyStatus: msg.status,
+        tick: msg.tick,
+        bot: msg.bot,
+        stats: msg.stats,
+        pnl: msg.pnl,
+        position: msg.position,
+        fills: msg.fills,
+        lines: msg.console.slice(-800),
+      };
+    case "bot":
+      return { ...v, bot: msg.bot };
+    case "result":
+      return {
+        ...v,
+        tick: msg.tick,
+        stats: msg.stats,
+        pnl: msg.pnl,
+        position: msg.position,
+        fills: [...msg.fills.map((f) => ({ ...f, tick: msg.tick })).reverse(), ...v.fills].slice(0, 40),
+      };
+    case "console":
+      return { ...v, lines: [...v.lines, ...msg.lines].slice(-800) };
+    case "status":
+      return { ...v, lobbyStatus: msg.status, tick: msg.tick ?? v.tick };
+  }
+}
+
+/** What the group's bot is doing, in a few words. */
+function describe(bot: BotInfo | null, lobbyStatus: string | null): string {
+  if (lobbyStatus === "scheduled") return "Your bot starts when the round starts.";
+  if (lobbyStatus === "finished") return "The round has finished.";
+  switch (bot?.status) {
+    case "none":
+      return "No active submission: pick one on the overview.";
+    case "starting":
+      return "Starting your bot…";
+    case "running":
+      return lobbyStatus === "paused" ? "Running; the round is paused." : "Running.";
+    case "stopped":
+      return bot.message ?? "Stopped.";
+    default:
+      return "Connecting to the exchange…";
+  }
+}
 
 export function LivePanel({
   slug,
   engineUrl,
+  groupId,
   lobbies,
-  canTrade,
 }: {
   slug: string;
   engineUrl: string;
+  groupId: string;
   lobbies: LiveLobby[];
-  canTrade: boolean;
 }) {
   const [selected, setSelected] = useState(lobbies.find((l) => l.active)?.id ?? lobbies[0]?.id ?? "");
-  const [running, setRunning] = useState(false);
-  const [status, setStatus] = useState<string | null>(null);
-  const [closedReason, setClosedReason] = useState<string | null>(null);
-  const [stats, setStats] = useState<Stats>(EMPTY);
-  const [lines, setLines] = useState<ConsoleLine[]>([]);
-  const session = useRef<LiveSession | null>(null);
-  const worker = useRef<RuntimeWorker | null>(null);
+  const [view, setView] = useState<View>(EMPTY);
   const lobby = lobbies.find((l) => l.id === selected);
 
   useEffect(() => {
-    if (!running) return;
-    const warn = (e: BeforeUnloadEvent) => e.preventDefault();
-    window.addEventListener("beforeunload", warn);
-    return () => window.removeEventListener("beforeunload", warn);
-  }, [running]);
-
-  useEffect(
-    () => () => {
-      session.current?.stop();
-      worker.current?.terminate();
-    },
-    [],
-  );
-
-  const log = (text: string[], kind: ConsoleLine["kind"] = "log") =>
-    setLines((prev) => appendLines(prev, text, kind));
-
-  const onEvent = (e: LiveEvent) => {
-    switch (e.type) {
-      case "connected":
-      case "disconnected":
-        setStats((s) => ({ ...s, connected: e.type === "connected" }));
-        if (e.type === "connected") log(["Connected to the exchange."], "info");
-        break;
-      case "welcome":
-        log([`Trading as your group. Lobby is ${e.status}; tick ${e.tick ?? "—"} of ${e.endTick}.`], "info");
-        break;
-      case "tick":
-        setStats((s) => ({
-          ...s,
-          tick: e.tick,
-          answered: s.answered + 1,
-          avgMs: s.answered ? s.avgMs + (e.ms - s.avgMs) / (s.answered + 1) : e.ms,
-        }));
-        break;
-      case "missed":
-        setStats((s) => ({ ...s, missed: s.missed + 1 }));
-        log([`tick ${e.tick}: skipped — ${e.reason}`], "error");
-        break;
-      case "result":
-        setStats((s) => ({
-          ...s,
-          pnl: e.pnl,
-          position: e.position,
-          rejects: s.rejects + e.rejects.length,
-          fills: [...e.fills.map((f) => ({ ...f, tick: e.tick })).reverse(), ...s.fills].slice(0, 40),
-        }));
-        if (e.rejects.length) log(e.rejects.map((r) => `tick ${e.tick}: rejected — ${r}`), "error");
-        break;
-      case "logs":
-        log(e.lines);
-        break;
-      case "error":
-        log([e.message], "error");
-        break;
-      case "closed":
-        setClosedReason(e.reason);
-        log([`Stopped: ${e.reason}`], "error");
-        stop();
-        break;
-    }
-  };
-
-  const start = async () => {
-    if (!lobby?.active) return;
-    const { language, source } = lobby.active;
-    setRunning(true);
-    setClosedReason(null);
-    setStats(EMPTY);
-    setLines([]);
-    try {
-      const started = await startBot(language, source, setStatus);
-      worker.current = started.worker;
-      log(started.logs);
-      setStatus(null);
-      const s = new LiveSession({
-        engineUrl,
-        lobbyId: lobby.id,
-        worker: started.worker,
-        getToken: async () => (await createClient().auth.getSession()).data.session?.access_token ?? null,
-        restart: async () => {
-          const again = await startBot(language, source, setStatus);
-          worker.current = again.worker;
-          return again.worker;
-        },
-        onEvent,
-      });
-      session.current = s;
-      s.start();
-    } catch (e) {
-      const err = e as Error & { logs?: string[] };
-      if (err.logs) log(err.logs);
-      log([err.message], "error");
-      setRunning(false);
-      setStatus(null);
-    }
-  };
-
-  function stop() {
-    session.current?.stop();
-    session.current = null;
-    worker.current?.terminate();
-    worker.current = null;
-    setRunning(false);
-    setStatus(null);
-  }
+    if (!selected) return;
+    const monitor = watchBot({
+      engineUrl,
+      lobbyId: selected,
+      groupId,
+      getToken: async () => (await createClient().auth.getSession()).data.session?.access_token ?? null,
+      onMessage: (msg) => setView((v) => reduce(v, msg)),
+      onState: (connected) => setView((v) => ({ ...v, connected })),
+      onClosed: (reason) =>
+        setView((v) => ({ ...v, closedReason: reason, lines: appendLines(v.lines, [reason], "error") })),
+    });
+    return () => monitor.close();
+  }, [engineUrl, groupId, selected]);
 
   if (lobbies.length === 0) {
     return (
@@ -178,6 +129,11 @@ export function LivePanel({
     );
   }
 
+  const status = view.lobbyStatus ?? lobby?.status ?? "";
+  const bot = view.bot;
+  const running = bot?.status === "running";
+  const submission = bot?.submission ?? lobby?.active ?? null;
+
   return (
     <div className="grid gap-4 xl:grid-cols-[1fr_440px]">
       <div className="space-y-4">
@@ -186,8 +142,10 @@ export function LivePanel({
             <select
               className="input max-w-72"
               value={selected}
-              disabled={running}
-              onChange={(e) => setSelected(e.target.value)}
+              onChange={(e) => {
+                setSelected(e.target.value);
+                setView(EMPTY);
+              }}
             >
               {lobbies.map((l) => (
                 <option key={l.id} value={l.id}>
@@ -195,64 +153,65 @@ export function LivePanel({
                 </option>
               ))}
             </select>
-            {lobby && <span className={`badge ${STATUS_STYLES[lobby.status]}`}>{lobby.status}</span>}
-            <div className="ml-auto flex gap-2">
-              {!running ? (
-                <button className="btn btn-primary" onClick={start} disabled={!canTrade || !lobby?.active}>
-                  Start bot in this tab
-                </button>
-              ) : (
-                <button className="btn btn-danger" onClick={stop}>
-                  Stop bot
-                </button>
-              )}
-            </div>
+            {status && <span className={`badge ${STATUS_STYLES[status]}`}>{status}</span>}
           </div>
-          {lobby?.active ? (
+          {submission ? (
             <p className="text-sm text-muted">
               Active submission:{" "}
-              <Link href={`/g/${slug}/s/${lobby.active.id}`} className="text-foreground hover:text-accent">
-                {lobby.active.title}
+              <Link href={`/g/${slug}/s/${submission.id}`} className="text-foreground hover:text-accent">
+                {submission.title}
               </Link>{" "}
-              ({languageLabel(lobby.active.language)}). Change it on the{" "}
+              ({languageLabel(submission.language)}). Change it on the{" "}
               <Link href={`/g/${slug}`} className="underline">overview</Link>.
             </p>
           ) : (
-            <p className="text-sm text-accent">Pick an active submission for this lobby on the overview first.</p>
+            <p className="text-sm text-accent">Pick an active submission for this lobby on the overview.</p>
           )}
-          {!canTrade && <p className="text-sm text-accent">Only group members can trade.</p>}
-          {status && <p className="text-xs text-muted">{status}</p>}
-          {closedReason && <p className="text-sm text-ask">{closedReason}</p>}
+          <p className={`text-sm ${bot?.status === "stopped" || view.closedReason ? "text-ask" : ""}`}>
+            {view.closedReason ?? describe(bot, status)}
+          </p>
           <p className="text-xs text-muted">
-            Your bot runs in this browser tab and trades for the whole group. Keep the tab open and visible;
-            closing it cancels your resting orders. If a teammate starts the bot elsewhere, this session stops.
+            The exchange runs your active submission for the whole group while the round is live. No tab has to
+            stay open; this page only shows what the bot is doing.
           </p>
         </section>
 
         <section className="panel grid grid-cols-2 gap-4 p-4 text-sm md:grid-cols-4">
-          <Metric label="Connection" value={running ? (stats.connected ? "live" : "connecting…") : "stopped"} />
-          <Metric label="Tick" value={stats.tick?.toString() ?? "—"} />
+          <Metric
+            label="Bot"
+            value={bot && status !== "scheduled" ? bot.status : "—"}
+            tone={running ? "text-bid" : bot?.status === "stopped" ? "text-ask" : ""}
+          />
+          <Metric label="Tick" value={view.tick?.toString() ?? "—"} />
           <Metric
             label="PnL (mid)"
-            value={Math.round(stats.pnl).toLocaleString()}
-            tone={stats.pnl >= 0 ? "text-bid" : "text-ask"}
+            value={Math.round(view.pnl).toLocaleString()}
+            tone={view.pnl >= 0 ? "text-bid" : "text-ask"}
           />
           <Metric
             label="Position"
-            value={Object.entries(stats.position).map(([g, q]) => `${g}: ${q}`).join("  ") || "—"}
+            value={Object.entries(view.position).map(([g, q]) => `${g}: ${q}`).join("  ") || "—"}
           />
-          <Metric label="Ticks answered" value={stats.answered.toString()} />
-          <Metric label="Ticks missed" value={stats.missed.toString()} tone={stats.missed ? "text-accent" : ""} />
-          <Metric label="Rejected orders" value={stats.rejects.toString()} tone={stats.rejects ? "text-accent" : ""} />
-          <Metric label="Avg bot time" value={`${Math.round(stats.avgMs)} ms`} />
+          <Metric label="Ticks answered" value={view.stats.answered.toString()} />
+          <Metric
+            label="Ticks missed"
+            value={view.stats.missed.toString()}
+            tone={view.stats.missed ? "text-accent" : ""}
+          />
+          <Metric
+            label="Rejected orders"
+            value={view.stats.rejects.toString()}
+            tone={view.stats.rejects ? "text-accent" : ""}
+          />
+          <Metric label="Avg bot time" value={`${Math.round(view.stats.avg_ms)} ms`} />
         </section>
 
         <section className="panel p-4">
           <h3 className="mb-2 text-sm font-semibold">Recent fills</h3>
-          {stats.fills.length === 0 && <p className="text-sm text-muted">No fills yet.</p>}
+          {view.fills.length === 0 && <p className="text-sm text-muted">No fills yet.</p>}
           <table className="num w-full text-xs">
             <tbody>
-              {stats.fills.map((f, i) => (
+              {view.fills.map((f, i) => (
                 <tr key={i} className="border-t border-border">
                   <td className="py-1 text-muted">{f.tick}</td>
                   <td>{f.good}</td>
@@ -266,8 +225,10 @@ export function LivePanel({
       </div>
 
       <section className="space-y-2">
-        <h3 className="text-sm font-semibold">Console</h3>
-        <ConsoleView lines={lines} height="calc(100vh - 14rem)" />
+        <h3 className="text-sm font-semibold">
+          Console <span className="font-normal text-muted">(from the exchange)</span>
+        </h3>
+        <ConsoleView lines={view.lines} height="calc(100vh - 14rem)" />
       </section>
     </div>
   );

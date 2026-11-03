@@ -2,11 +2,13 @@
 
 Each tick ``t`` runs in two halves:
 
-1. ``open_tick(t, pre)``: expire orders, then apply the bot market maker's quote refresh.
-   The resulting book is the state every participant bot sees for tick ``t``.
+1. ``open_tick(t, pre)``: expire orders, then apply the bot market maker's quote refresh and fix
+   the tick's price bands. The resulting book is the state every participant bot sees for tick
+   ``t`` (each bot sees it without its own orders, which its reply replaces).
 2. ``close_tick(batches, post)``: apply each participant's batch of actions (participants in a
-   seeded order, each batch atomically in submission order), then the bot takers
-   (noise and informed traders), which can fill against resting participant quotes.
+   seeded order, each batch atomically in submission order; orders sent again unchanged keep
+   their place in line), then the bot takers (noise and informed traders), which can fill
+   against resting participant quotes.
 
 Bot actions depend only on the seed and the tick, never on participant behaviour, so a
 backtest that replays the recorded bot actions reproduces the live market exactly for a
@@ -42,6 +44,7 @@ class TickDriver:
         self.exchange.begin_tick(tick, log)
         for action in pre:
             self.exchange.apply(tick, action, log)
+        self.exchange.set_bands()
         self.recent_fills = self._close_fills + log.fills
         self.tick = tick
         self._open = True
@@ -58,7 +61,7 @@ class TickDriver:
             for action in batches[owner]:
                 if action.owner != owner:
                     raise ValueError(f"action owner {action.owner!r} in batch for {owner!r}")
-                self.exchange.apply(self.tick, action, log)
+            self.exchange.apply_batch(self.tick, batches[owner], log)
         for action in post:
             self.exchange.apply(self.tick, action, log)
         self._close_fills = log.fills
@@ -73,11 +76,12 @@ class TickDriver:
 
         return sorted(owners, key=key)
 
-    def public_state(self) -> dict:
+    def public_state(self, exclude: str | None = None) -> dict:
+        """The book and recent trades; ``exclude`` leaves that owner's resting orders out."""
         depths = {}
         trades: dict[str, list[list[int]]] = {g: [] for g in self.rules.goods}
         for good, book in self.exchange.books.items():
-            bids, asks = book.depth(self.depth_levels)
+            bids, asks = book.depth(self.depth_levels, exclude)
             depths[good] = {"bids": bids, "asks": asks}
         for fill in self.recent_fills:
             trades[fill.good].append([fill.price, fill.qty, fill.aggressor])

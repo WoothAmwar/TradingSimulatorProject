@@ -5,8 +5,9 @@ services:
     runtime: docker
     region: ohio # next to the Supabase project (us-east-2)
     # Free: 0.1 CPU / 512 MB, single instance. It spins down after 15 minutes without inbound
-    # traffic; live bots send orders every tick and open pages send a keep-alive, and a restart
-    # or spin-down is recovered by replaying the lobby from Supabase.
+    # traffic; open pages send a keep-alive and, since live bots run here, the engine requests its
+    # own RENDER_EXTERNAL_URL while a lobby is live. A restart or spin-down is recovered by
+    # replaying the lobby from Supabase.
     plan: free
     dockerfilePath: ./engine/Dockerfile
     dockerContext: ./engine

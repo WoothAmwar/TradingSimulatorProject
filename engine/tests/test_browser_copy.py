@@ -1,4 +1,5 @@
-"""The in-browser backtester runs copies of the browser-safe modules; keep them identical."""
+"""The browser runs copies of the browser-safe engine modules and of the Python bot SDK; keep
+them identical."""
 
 import ast
 import json
@@ -6,6 +7,8 @@ from pathlib import Path
 
 ENGINE = Path(__file__).resolve().parents[1] / "market_core"
 COPY = Path(__file__).resolve().parents[2] / "web" / "public" / "py" / "market_core"
+SDK = Path(__file__).resolve().parents[1] / "bot_sdk"
+SDK_COPY = COPY.parent / "bot_sdk"
 
 
 def test_browser_copies_match_engine():
@@ -13,6 +16,15 @@ def test_browser_copies_match_engine():
     for name in files:
         assert (COPY / name).read_bytes() == (ENGINE / name).read_bytes(), (
             f"{name} drifted; run `npm run sync:engine` in web/"
+        )
+
+
+def test_browser_bot_sdk_matches_engine():
+    files = json.loads((SDK_COPY / "files.json").read_text())
+    assert files == ["trader_sdk.py", "bot_runner.py"]
+    for name in files:
+        assert (SDK_COPY / name).read_bytes() == (SDK / name).read_bytes(), (
+            f"bot_sdk/{name} drifted; run `npm run sync:engine` in web/"
         )
 
 

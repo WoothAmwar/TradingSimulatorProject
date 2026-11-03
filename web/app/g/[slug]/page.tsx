@@ -1,6 +1,8 @@
 import Link from "next/link";
-import { Suspense } from "react";
+import { Suspense, type ReactNode } from "react";
 import { ActiveSubmissionPicker } from "@/components/group/active-submission-picker";
+import { DeleteSubmissionButton } from "@/components/group/delete-submission-button";
+import { LocalTime } from "@/components/local-time";
 import { getGroupContext, getGroupLobbies, getStaticRounds } from "@/lib/group";
 import { STATIC_PRESETS, STATUS_STYLES, statusLabel } from "@/lib/lobby";
 import { languageLabel } from "@/lib/templates";
@@ -15,7 +17,7 @@ export default function GroupOverviewPage({ params }: PageProps<"/g/[slug]">) {
 
 async function Overview({ params }: Pick<PageProps<"/g/[slug]">, "params">) {
   const { slug } = await params;
-  const { group, supabase } = await getGroupContext(slug);
+  const { viewer, group, supabase } = await getGroupContext(slug);
   const [{ data: roster }, { data: submissions }, lobbies, rounds, { data: attempts }] = await Promise.all([
     supabase.rpc("get_group_roster", { p_group: group.id }),
     supabase
@@ -27,7 +29,7 @@ async function Overview({ params }: Pick<PageProps<"/g/[slug]">, "params">) {
     getStaticRounds(),
     supabase
       .from("round_attempts")
-      .select("lobby_id, created_at")
+      .select("lobby_id, submission_id, created_at")
       .eq("group_id", group.id)
       .order("created_at", { ascending: false }),
   ]);
@@ -41,7 +43,9 @@ async function Overview({ params }: Pick<PageProps<"/g/[slug]">, "params">) {
     .filter((s) => s.lobby_id === null)
     .map((s) => ({
       id: s.id,
-      label: `${s.title} · ${languageLabel(s.language)} · ${names.get(s.author_id ?? "") ?? "unknown"}`,
+      title: s.title,
+      createdAt: s.created_at,
+      detail: `${languageLabel(s.language)} · ${names.get(s.author_id ?? "") ?? "unknown"}`,
     }));
   const scoreFor = (lobbyId: string) => {
     const rows = (results ?? []).filter((r) => r.lobby_id === lobbyId);
@@ -49,12 +53,19 @@ async function Overview({ params }: Pick<PageProps<"/g/[slug]">, "params">) {
     return own ? { score: Number(own.final_pnl), rank: own.rank, of: rows.length } : null;
   };
   const attemptsFor = (lobbyId: string) => (attempts ?? []).filter((a) => a.lobby_id === lobbyId);
+  // Code that is a lobby's active submission or produced a round score is the record of what
+  // competed, so it is kept. Otherwise its author (or an admin) may delete it.
+  const inUse = new Set([
+    ...lobbies.flatMap((l) => (l.activeSubmissionId ? [l.activeSubmissionId] : [])),
+    ...(attempts ?? []).flatMap((a) => (a.submission_id ? [a.submission_id] : [])),
+  ]);
+  const canDelete = (authorId: string | null) => authorId === viewer.id || viewer.profile.is_admin;
   const scoreTiles: {
     id: string;
     name: string;
     kind: "live" | "static";
     result: ReturnType<typeof scoreFor>;
-    note: string;
+    note: ReactNode;
     href?: string;
   }[] = [
     ...lobbies.map((l) => {
@@ -75,7 +86,13 @@ async function Overview({ params }: Pick<PageProps<"/g/[slug]">, "params">) {
         name: r.name,
         kind: "static" as const,
         result: scoreFor(r.id),
-        note: last ? `Last submitted ${new Date(last.created_at).toLocaleString()}` : "Not submitted yet",
+        note: last ? (
+          <>
+            Last submitted <LocalTime iso={last.created_at} />
+          </>
+        ) : (
+          "Not submitted yet"
+        ),
       };
     }),
   ];
@@ -142,7 +159,8 @@ async function Overview({ params }: Pick<PageProps<"/g/[slug]">, "params">) {
             ))}
           </ul>
           <p className="mt-2 text-xs text-muted">
-            One active submission per lobby. Any member can change it or run it from Live trading.
+            One active submission per lobby. The exchange runs it while the round is live; any member can
+            change it, and the new one takes over within seconds.
           </p>
         </section>
 
@@ -197,7 +215,16 @@ async function Overview({ params }: Pick<PageProps<"/g/[slug]">, "params">) {
                   <td className="text-muted">{names.get(s.author_id ?? "") ?? "former member"}</td>
                   <td className="num text-xs text-muted">{s.source_sha256?.slice(0, 8)}</td>
                   <td className="num text-right text-xs text-muted">
-                    {new Date(s.created_at).toLocaleString()}
+                    <LocalTime iso={s.created_at} />
+                  </td>
+                  <td className="pl-3 text-right">
+                    {inUse.has(s.id) ? (
+                      <span className="text-xs text-muted" title="Active in a lobby or scored in a round, so it is kept">
+                        in use
+                      </span>
+                    ) : (
+                      canDelete(s.author_id) && <DeleteSubmissionButton id={s.id} title={s.title} />
+                    )}
                   </td>
                 </tr>
               ))}

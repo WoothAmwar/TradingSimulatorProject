@@ -11,6 +11,9 @@ dependencies = [
     "uvicorn[standard]",
     "httpx",
     "pyjwt[crypto]",
+    # Pinned exactly: server/sandbox.py uses its private epoch-deadline binding, and python.cwasm
+    # only loads into the version that compiled it.
+    "wasmtime==50.0.1",
 ]
 
 [dependency-groups]

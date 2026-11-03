@@ -89,8 +89,12 @@ export async function submitRoundScore(input: {
 
 export async function deleteSubmission(submissionId: string): Promise<ActionResult> {
   const { supabase } = await requireViewer();
-  const { error } = await supabase.from("submissions").delete().eq("id", submissionId);
+  const { data, error } = await supabase.from("submissions").delete().eq("id", submissionId).select("id");
+  // 23503: a lobby entry or a round score still points at it (protect_competing_submissions).
+  if (error?.code === "23503") return { ok: false, error: "In use by a lobby or a round score" };
   if (error) return { ok: false, error: error.message };
+  // Row level security skips rows the viewer may not delete instead of raising an error.
+  if (!data.length) return { ok: false, error: "Only its author or an admin can delete it" };
   refresh();
   return { ok: true };
 }

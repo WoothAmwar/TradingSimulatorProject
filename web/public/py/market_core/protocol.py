@@ -14,7 +14,9 @@ Response from a bot (every key optional; quantities are signed, + buys and - sel
     {"cancel_all": true | ["STABLE"], "cancel": [7, 8],
      "orders": [{"good": "STABLE", "price": 9999, "qty": 5, "tif": "GTC", "client_id": "a"}]}
 
-Cancels are applied before new orders so a bot can replace its quotes within one tick.
+Cancels are applied before new orders so a bot can replace its quotes within one tick. After a
+``cancel_all``, orders sent again unchanged stay in the book and keep their place in line.
+Participants' prices past the tick's price band (``ExchangeRules.price_band``) move to its edge.
 """
 
 from __future__ import annotations
@@ -33,7 +35,9 @@ def _text(value: Any) -> str:
 
 
 def bot_state(driver: TickDriver, owner: str) -> dict:
-    state = driver.public_state()
+    """What ``owner``'s bot sees. The book leaves out its own orders: its reply replaces them, so
+    the rest of the market is what it trades against (its orders are still in ``open_orders``)."""
+    state = driver.public_state(exclude=owner)
     state["goods"] = list(driver.rules.goods)
     state["limits"] = dict(driver.rules.position_limits)
     state.update(driver.private_state(owner))

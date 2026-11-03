@@ -35,4 +35,5 @@ build/
 
 # Generated artifacts
 engine/out/
+engine/wasi-python/
 web/public/py/*.whl

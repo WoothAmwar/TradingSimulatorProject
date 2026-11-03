@@ -18,8 +18,8 @@ export const isLanguage = (id: string): id is Language => LANGUAGES.some((l) => 
 export const PY_STATE_FIELDS: { name: string; type: string; meaning: string }[] = [
   { name: "state.tick", type: "int", meaning: "Tick number: 0, 1, 2, ..." },
   { name: "state.price", type: "float", meaning: "Current price: halfway between the best bid and ask." },
-  { name: "state.bids", type: "list of (price, qty)", meaning: "Offers to buy, highest price first." },
-  { name: "state.asks", type: "list of (price, qty)", meaning: "Offers to sell, lowest price first." },
+  { name: "state.bids", type: "list of (price, qty)", meaning: "Other traders' offers to buy, highest price first." },
+  { name: "state.asks", type: "list of (price, qty)", meaning: "Other traders' offers to sell, lowest price first." },
   { name: "state.position", type: "int", meaning: "Units you own (below 0: you owe units)." },
   { name: "state.limit", type: "int", meaning: "The most units you may own, or owe." },
   { name: "state.cash", type: "int", meaning: "Money from selling minus money spent buying." },
@@ -40,33 +40,36 @@ const PY_STATE = `STATE: what run(state) gets every tick
 ${PY_STATE_FIELDS.map(pyRow).join("\n")}`;
 
 const PY_RETURN = `RETURN: a list of orders such as [buy(99, 5), sell(103, 5)], or [] for none.
-    They replace last tick's orders. Orders that could take you past the limit are rejected.`;
+    They replace last tick's orders; one sent again unchanged keeps its place in line.
+    Orders that could take you past the limit are rejected.`;
 
 const CPP_STATE = `// STATE: what run(s) gets every tick
 //   s.tick       int             tick number: 0, 1, 2, ...
 //   s.price      double          current price: halfway between the best bid and ask
-//   s.bids       vector<Level>   offers to buy {price, qty}, highest price first
-//   s.asks       vector<Level>   offers to sell {price, qty}, lowest price first
+//   s.bids       vector<Level>   other traders' offers to buy {price, qty}, highest price first
+//   s.asks       vector<Level>   other traders' offers to sell {price, qty}, lowest price first
 //   s.position   int             units you own (below 0: you owe units)
 //   s.limit      int             the most units you may own, or owe
 //   s.cash       long long       money from selling minus money spent buying
 //   s.trades     vector<Trade>   everyone's trades {price, qty} since the last tick`;
 
 const CPP_RETURN = `// RETURN: a vector of orders such as {buy(99, 5), sell(103, 5)}, or {} for none.
-//   They replace last tick's orders. Orders that could take you past the limit are rejected.`;
+//   They replace last tick's orders; one sent again unchanged keeps its place in line.
+//   Orders that could take you past the limit are rejected.`;
 
 const C_STATE = `/* STATE: what trader_run(s, out) gets every tick
  *   s->tick         int        tick number: 0, 1, 2, ...
  *   s->price        double     current price: halfway between the best bid and ask
- *   s->bids[i]      Level      offers to buy {price, qty}, highest first (i < s->num_bids)
- *   s->asks[i]      Level      offers to sell {price, qty}, lowest first (i < s->num_asks)
+ *   s->bids[i]      Level      others' offers to buy {price, qty}, highest first (i < s->num_bids)
+ *   s->asks[i]      Level      others' offers to sell {price, qty}, lowest first (i < s->num_asks)
  *   s->position     int        units you own (below 0: you owe units)
  *   s->limit        int        the most units you may own, or owe
  *   s->cash         long long  money from selling minus money spent buying
  *   s->trades[i]    Trade      everyone's recent trades {price, qty} (i < s->num_trades) */`;
 
 const C_RETURN = `/* RETURN: call buy(out, price, qty) or sell(out, price, qty) for each order, or neither.
- *   They replace last tick's orders. Orders that could take you past the limit are rejected. */`;
+ *   They replace last tick's orders; one sent again unchanged keeps its place in line.
+ *   Orders that could take you past the limit are rejected. */`;
 
 // The starter strategy in every language: offer to buy one above the best bid and to sell one below
 // the best ask, so other traders deal with this bot first. Sizes stay inside the limit.

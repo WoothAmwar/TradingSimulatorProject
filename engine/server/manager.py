@@ -9,15 +9,21 @@ from collections import defaultdict
 from datetime import UTC, datetime
 from pathlib import Path
 
+import httpx
+
 from market_core.config import resolve_lobby_config
 from market_core.dataset import build_dataset
 from market_core.static_rounds import build_static_dataset
 
+from .bots import BotFactory
 from .runner import LobbyRunner
 from .settings import Settings
 from .store import LobbyRecord, Store
+from .trades import TradeLog
 
 log = logging.getLogger("engine.manager")
+
+KEEP_AWAKE_S = 240  # Render's free plan sleeps after 15 minutes without inbound requests
 
 
 class LobbyError(Exception):
@@ -27,9 +33,10 @@ class LobbyError(Exception):
 
 
 class EngineManager:
-    def __init__(self, store: Store, settings: Settings) -> None:
+    def __init__(self, store: Store, settings: Settings, bot_factory: BotFactory) -> None:
         self.store = store
         self.settings = settings
+        self.bot_factory = bot_factory
         self.runners: dict[str, LobbyRunner] = {}
         self._locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
         self._background: set[asyncio.Task] = set()
@@ -39,7 +46,8 @@ class EngineManager:
 
     async def startup(self) -> None:
         self._spawn(self._heartbeat())
-        # Awaited so `recovering` is filled before traders can connect; replays run in the background.
+        self._spawn(self._keep_awake())
+        # Awaited so `recovering` is filled before monitors connect; replays run in the background.
         await self.recover()
 
     async def shutdown(self) -> None:
@@ -72,6 +80,20 @@ class EngineManager:
                     log.warning("lost lease for %s; detaching", lobby_id)
                     await runner.detach()
                     self.runners.pop(lobby_id, None)
+
+    async def _keep_awake(self) -> None:
+        """Bots run here now, so a live lobby can go 15 minutes without a request from any browser.
+        While one is running or paused, the engine requests its own public URL to stay awake."""
+        if not self.settings.public_url:
+            return
+        async with httpx.AsyncClient(timeout=30) as http:
+            while True:
+                await asyncio.sleep(KEEP_AWAKE_S)
+                if any(r.status in ("running", "paused") for r in self.runners.values()):
+                    try:
+                        await http.get(f"{self.settings.public_url}/health")
+                    except httpx.HTTPError as exc:
+                        log.warning("keep-awake request failed: %s", exc)
 
     async def _claim(self, lobby_id: str) -> bool:
         return await self.store.claim_lease(
@@ -120,7 +142,9 @@ class EngineManager:
         seed, model = await self.store.load_secret(lobby.id)
         config = resolve_lobby_config(lobby.public_config, model)
         groups = await self.store.lobby_groups(lobby.id)
-        runner = LobbyRunner(lobby.id, config, seed, groups, self.store, lobby.status)
+        runner = LobbyRunner(
+            lobby.id, config, seed, groups, self.store, lobby.status, self.bot_factory
+        )
         batches: dict[int, dict[str, list[dict]]] = defaultdict(dict)
         until = None
         if replay:
@@ -157,10 +181,13 @@ class EngineManager:
             return None
         history: dict[str, list[list[float]]] = defaultdict(list)
         leaderboard: list[dict] = []
+        trades = TradeLog()
         if lobby.status == "finished":
+            mids: dict[tuple[int, str], float] = {}
             for row in await self.store.market_history(lobby_id):
                 if row["mid"] is not None:
                     history[row["good"]].append([row["tick"], float(row["mid"])])
+                    mids[(row["tick"], row["good"])] = float(row["mid"])
             leaderboard = [
                 {
                     "group_id": r["group_id"],
@@ -169,6 +196,9 @@ class EngineManager:
                 }
                 for r in await self.store.results(lobby_id)
             ]
+            names = {r["group_id"]: r["name"] for r in leaderboard}
+            fills = await self.store.participant_fills(lobby_id)
+            trades = TradeLog.from_rows(fills, mids, names)
         return {
             "type": "snapshot",
             "status": lobby.status,
@@ -178,6 +208,7 @@ class EngineManager:
             "history": history,
             "books": {},
             "leaderboard": leaderboard,
+            **trades.snapshot(),
         }
 
     # Admin actions ------------------------------------------------------------------------
@@ -271,7 +302,7 @@ class EngineManager:
                 },
             )
             runner.start()
-            await runner._broadcast({"type": "status", "status": "running", "tick": runner.tick})
+            await runner.announce({"type": "status", "status": "running", "tick": runner.tick})
 
     def _live_runner(self, lobby_id: str, statuses: tuple[str, ...]) -> LobbyRunner:
         runner = self.runners.get(lobby_id)

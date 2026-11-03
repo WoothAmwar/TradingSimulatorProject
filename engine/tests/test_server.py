@@ -1,13 +1,17 @@
-"""End-to-end engine tests over HTTP and WebSockets, backed by the in-memory store."""
+"""End-to-end engine tests over HTTP and WebSockets, backed by the in-memory store. Bots run
+in-process here (FakeBot); tests/test_sandbox.py covers the real sandbox."""
 
 import time
+from contextlib import contextmanager
 
 import pytest
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
+from server import bots
 from server.app import create_app
 from server.auth import AuthError
+from server.sandbox import BotError, Reply
 from server.settings import Settings
 from server.store import LobbyRecord, MemoryStore
 
@@ -46,9 +50,45 @@ def make_store() -> MemoryStore:
     return store
 
 
+def select(store: MemoryStore, group: str, sid: str, source: str, language: str = "python"):
+    """Saves a submission whose source names a strategy below, as the group's active one."""
+    store.submissions[sid] = {"id": sid, "title": sid, "language": language, "source": source}
+    store.active[(LOBBY, group)] = sid
+
+
+class FakeBot:
+    """Runs one of the strategies below in-process, through the same interface as the sandbox."""
+
+    made: list["FakeBot"] = []
+
+    def __init__(self, language: str, source: str, wasm: bytes | None, label: str) -> None:
+        self.language, self.source, self.wasm = language, source, wasm
+        self.dead, self.busy, self.closed, self.ticks = None, False, False, 0
+        FakeBot.made.append(self)
+
+    async def start(self) -> list[str]:
+        if self.source == "broken":
+            raise BotError("SyntaxError: invalid syntax", ["printed while loading"])
+        return [f"{self.source} ready"]
+
+    async def tick(self, state: dict) -> Reply:
+        self.ticks += 1
+        if self.source == "crash" and not any(
+            b.source == "crash" and b.ticks for b in FakeBot.made[:-1]
+        ):
+            raise BotError("took longer than 10 s and was stopped")  # only the first bot
+        if self.source == "raise":
+            return Reply(None, [], "ZeroDivisionError: division by zero")
+        strategy = STRATEGIES.get(self.source, quiet)
+        return Reply(strategy(state), [f"{self.source} tick {state['tick']}"])
+
+    def close(self) -> None:
+        self.closed = True
+
+
 def make_app(store: MemoryStore, instance: str = "i1"):
     settings = Settings("http://supabase.test", "secret", (), instance, lease_ttl_seconds=30)
-    return create_app(store, FakeVerifier(), settings)
+    return create_app(store, FakeVerifier(), settings, FakeBot)
 
 
 ADMIN = {"Authorization": "Bearer user:admin"}
@@ -80,6 +120,28 @@ def taker(state: dict) -> dict:
     return {"orders": orders}
 
 
+def quiet(state: dict) -> dict:
+    return {"cancel_all": True, "orders": []}
+
+
+STRATEGIES = {"maker": maker, "taker": taker, "quiet": quiet}
+
+
+@contextmanager
+def watch(client: TestClient, token: str, group: str | None = None):
+    """A group's bot monitor, signed in as ``token``."""
+    with client.websocket_connect(f"/ws/bot/{LOBBY}") as ws:
+        ws.send_json({"type": "auth", "token": token, **({"group_id": group} if group else {})})
+        yield ws
+
+
+def wait_for(predicate, timeout: float = 10.0) -> None:
+    deadline = time.monotonic() + timeout
+    while not predicate():
+        assert time.monotonic() < deadline, "timed out"
+        time.sleep(0.02)
+
+
 def test_admin_auth():
     with TestClient(make_app(make_store())) as client:
         assert client.post(f"/admin/lobbies/{LOBBY}/prepare").status_code == 401
@@ -93,6 +155,8 @@ def test_admin_auth():
 
 def test_full_lobby_lifecycle():
     store = make_store()
+    select(store, "g1", "s1", "maker")
+    select(store, "g2", "s2", "taker")
     with TestClient(make_app(store)) as client:
         assert client.post(f"/admin/lobbies/{LOBBY}/prepare", headers=ADMIN).json() == {"ok": True}
         lobby = store.lobbies[LOBBY]
@@ -103,41 +167,48 @@ def test_full_lobby_lifecycle():
 
         with (
             client.websocket_connect(f"/ws/market/{LOBBY}") as viewer,
-            client.websocket_connect(f"/ws/trade/{LOBBY}") as t1,
-            client.websocket_connect(f"/ws/trade/{LOBBY}") as t2,
+            watch(client, "user:u1") as monitor,
         ):
             snap = viewer.receive_json()
             assert snap["type"] == "snapshot" and snap["status"] == "scheduled"
             assert snap["tick"] == K - 1 and len(snap["history"]["STABLE"]) == K // 5
             viewer.send_json({"type": "ping"})  # keep-alive from open pages; ignored
 
-            t1.send_json({"type": "auth", "token": "user:u1"})
-            t2.send_json({"type": "auth", "token": "user:u2"})
-            assert next_of(t1, "welcome")["group_id"] == "g1"
-            assert next_of(t2, "welcome")["group_id"] == "g2"
-
+            # Nobody keeps a bot page open: the engine runs both groups' bots by itself; the
+            # monitor only watches g1's.
+            first = monitor.receive_json()
+            assert first["type"] == "snapshot" and first["bot"]["status"] == "waiting"
             assert client.post(f"/admin/lobbies/{LOBBY}/start", headers=ADMIN).status_code == 200
             assert store.lobbies[LOBBY].status == "running"
 
-            seen_ticks = []
-            for _ in range(LIVE):
-                s1, s2 = next_of(t1, "state"), next_of(t2, "state")
-                assert s1["tick"] == s2["tick"]
-                seen_ticks.append(s1["tick"])
-                t1.send_json({"type": "orders", "tick": s1["tick"], "response": maker(s1["state"])})
-                t2.send_json({"type": "orders", "tick": s2["tick"], "response": taker(s2["state"])})
-            assert seen_ticks == list(range(K, K + LIVE))
+            seen = []
+            while True:
+                msg = monitor.receive_json()
+                seen.append(msg)
+                if msg["type"] == "status" and msg["status"] == "finished":
+                    break
+            with pytest.raises(WebSocketDisconnect) as exc:
+                monitor.receive_json()
+            assert exc.value.code == 1000
 
-            first = next_of(viewer, "tick")
-            assert first["tick"] == K
-            assert [r["online"] for r in first["leaderboard"]] == [True, True]
+            first_tick = next_of(viewer, "tick")
+            assert first_tick["tick"] == K
+            assert [r["online"] for r in first_tick["leaderboard"]] == [True, True]
             final = next_of(viewer, "status")
             while final["status"] != "finished":
                 final = next_of(viewer, "status")
             assert [r["name"] for r in final["leaderboard"]] != []
 
+        statuses = [m["bot"] for m in seen if m["type"] == "bot"]
+        assert statuses[-1]["status"] == "running" and statuses[-1]["submission"]["id"] == "s1"
+        assert [m["tick"] for m in seen if m["type"] == "result"] == list(range(K, K + LIVE))
+        console = [line["text"] for m in seen if m["type"] == "console" for line in m["lines"]]
+        assert "maker ready" in console and f"maker tick {K}" in console
+        assert any(m["type"] == "result" and m["fills"] for m in seen)
+
         assert store.lobbies[LOBBY].status == "finished"
-        # Bots disconnecting after the end must not replace the final (fair-value) leaderboard.
+        assert all(bot.closed for bot in FakeBot.made[-2:])
+        # Bots stopping after the end must not replace the final (fair-value) leaderboard.
         final_board = client.app.state.manager.runners[LOBBY].leaderboard
         assert final_board == final["leaderboard"] and "online" not in final_board[0]
         results = store.results_rows[LOBBY]
@@ -153,64 +224,126 @@ def test_full_lobby_lifecycle():
         assert LOBBY not in store.leases  # released when the lobby finished
 
 
-def test_late_and_unauthorized_traders():
+def test_monitor_access():
     store = make_store()
     store.members["u3"] = "g3"
     store.group_names["g3"] = "Gamma"
     with TestClient(make_app(store)) as client:
+
+        def close_code(token: str, group: str | None = None) -> int:
+            with watch(client, token, group) as ws, pytest.raises(WebSocketDisconnect) as exc:
+                ws.receive_json()
+            return exc.value.code
+
         client.post(f"/admin/lobbies/{LOBBY}/prepare", headers=ADMIN)
-        with client.websocket_connect(f"/ws/trade/{LOBBY}") as ws:
-            ws.send_json({"type": "auth", "token": "nope"})
-            with pytest.raises(WebSocketDisconnect) as exc:
-                ws.receive_json()
-            assert exc.value.code == 4401
-        with client.websocket_connect(f"/ws/trade/{LOBBY}") as ws:
-            ws.send_json({"type": "auth", "token": "user:u3"})  # g3 is not entered
-            with pytest.raises(WebSocketDisconnect) as exc:
-                ws.receive_json()
-            assert exc.value.code == 4403
+        assert close_code("nope") == 4401
+        assert close_code("user:u3") == 4403  # g3 is not entered
+        assert close_code("user:u1", "g2") == 4403  # members watch only their own group
+        with watch(client, "user:admin", "g2") as admin:  # admins may watch any group
+            assert admin.receive_json()["type"] == "snapshot"
+
+
+def test_late_responses_are_refused():
+    store = make_store()
+    with TestClient(make_app(store)) as client:
+        client.post(f"/admin/lobbies/{LOBBY}/prepare", headers=ADMIN)
         client.post(f"/admin/lobbies/{LOBBY}/start", headers=ADMIN)
-        with client.websocket_connect(f"/ws/trade/{LOBBY}") as ws:
-            ws.send_json({"type": "auth", "token": "user:u1"})
-            state = next_of(ws, "state")
-            ws.send_json({"type": "ping"})  # keep-alive: must not produce a notice
-            ws.send_json({"type": "orders", "tick": state["tick"] - 5, "response": {}})
-            msg = ws.receive_json()
-            while msg["type"] in ("state", "result"):
-                msg = ws.receive_json()
-            assert msg["type"] == "late" and msg["tick"] == state["tick"] - 5
+        runner = client.app.state.manager.runners[LOBBY]
+        wait_for(lambda: runner._accepting is not None)
+        notice = runner.submit_response("g1", K - 5, {"orders": []})
+        assert notice == "response arrived after the deadline"
         client.post(f"/admin/lobbies/{LOBBY}/stop", headers=ADMIN)
         assert store.lobbies[LOBBY].status == "finished"
+
+
+def test_bots_follow_the_active_submission(monkeypatch):
+    monkeypatch.setattr(bots, "SYNC_EVERY_S", 0.1)
+    monkeypatch.setattr(bots, "RESTART_DELAYS_S", (0.2,))
+    store = make_store()
+    store.lobbies[LOBBY].public_config["live_ticks"] = 400
+    select(store, "g1", "s1", "maker")
+    select(store, "g2", "s2", "broken")
+    with TestClient(make_app(store)) as client:
+        client.post(f"/admin/lobbies/{LOBBY}/prepare", headers=ADMIN)
+        client.post(f"/admin/lobbies/{LOBBY}/start", headers=ADMIN)
+        runner = client.app.state.manager.runners[LOBBY]
+        g1, g2 = runner.bots.group("g1"), runner.bots.group("g2")
+        wait_for(lambda: g1.status == "running" and g1.answered > 0)
+        # Code that doesn't load stops with its error and isn't retried until the selection changes.
+        assert g2.status == "stopped" and "didn't start" in g2.message
+        assert {"kind": "error", "text": "SyntaxError: invalid syntax"} in g2.console
+        assert {"kind": "log", "text": "printed while loading"} in g2.console
+
+        # A new selection takes over: the old bot stops and its resting orders are cancelled.
+        old = g1.bot
+        select(store, "g1", "s3", "quiet")
+        wait_for(lambda: g1.status == "running" and g1.selection.submission_id == "s3")
+        assert old.closed
+        cancel_only = [{"type": "cancel_all", "owner": "g1", "good": None}]
+        wait_for(
+            lambda: any(
+                b["group_id"] == "g1" and b["actions"] == cancel_only
+                for b in store.tables["order_batches"]
+            )
+        )
+
+        # A crash restarts the bot after a delay; run() raising only skips that tick.
+        FakeBot.made.clear()
+        select(store, "g2", "s4", "crash")
+        wait_for(lambda: g2.crashes == 1 and "restarts in" in (g2.message or ""))
+        wait_for(lambda: g2.status == "running" and g2.answered > 0)
+        select(store, "g2", "s5", "raise")
+        wait_for(lambda: any("ZeroDivisionError" in line["text"] for line in g2.console))
+        assert g2.status == "running"
+
+        # No selection: no bot, and the group shows as offline.
+        store.active.pop((LOBBY, "g2"))
+        wait_for(lambda: g2.status == "none")
+        assert {r["group_id"]: r["online"] for r in runner.leaderboard} == {
+            "g1": True,
+            "g2": False,
+        }
+        client.post(f"/admin/lobbies/{LOBBY}/stop", headers=ADMIN)
+
+
+def test_cpp_bot_waits_for_its_build(monkeypatch):
+    monkeypatch.setattr(bots, "SYNC_EVERY_S", 0.1)
+    store = make_store()
+    store.lobbies[LOBBY].public_config["live_ticks"] = 400
+    select(store, "g1", "s1", "maker", language="cpp")
+    with TestClient(make_app(store)) as client:
+        client.post(f"/admin/lobbies/{LOBBY}/prepare", headers=ADMIN)
+        client.post(f"/admin/lobbies/{LOBBY}/start", headers=ADMIN)
+        g1 = client.app.state.manager.runners[LOBBY].bots.group("g1")
+        wait_for(lambda: g1.status == "stopped" and "no compiled build" in g1.message)
+        store.builds[("g1", "s1")] = b"\0asm build"  # the browser finished uploading it
+        wait_for(lambda: g1.status == "running")
+        assert g1.bot.wasm == b"\0asm build"
+        client.post(f"/admin/lobbies/{LOBBY}/stop", headers=ADMIN)
 
 
 def test_recovery_replays_to_identical_state():
     store = make_store()
     store.lobbies[LOBBY].public_config["live_ticks"] = 200  # long enough to pause mid-way
+    select(store, "g1", "s1", "maker")
     app1 = make_app(store, "instance-a")
     with TestClient(app1) as client:
         client.post(f"/admin/lobbies/{LOBBY}/prepare", headers=ADMIN)
         client.post(f"/admin/lobbies/{LOBBY}/start", headers=ADMIN)
-        with client.websocket_connect(f"/ws/trade/{LOBBY}") as t1:
-            t1.send_json({"type": "auth", "token": "user:u1"})
-            for _ in range(8):
-                s = next_of(t1, "state")
-                t1.send_json({"type": "orders", "tick": s["tick"], "response": maker(s["state"])})
+        runner1 = app1.state.manager.runners[LOBBY]
+        wait_for(lambda: runner1.bots.group("g1").answered >= 8)
         assert client.post(f"/admin/lobbies/{LOBBY}/pause", headers=ADMIN).status_code == 200
         time.sleep(TICK_MS / 1000 * 2)  # let the in-flight tick finish
-        runner1 = app1.state.manager.runners[LOBBY]
-        assert not any(r["online"] for r in runner1.leaderboard)  # g1's bot disconnected
     # Leaving the client shuts the instance down: it flushes, detaches and releases the lease.
     assert store.lobbies[LOBBY].status == "paused"
+    assert runner1.bots.group("g1").bot is None  # stopped along with the instance
     acct1 = runner1.sim.driver.exchange.accounts["g1"]
     assert any(acct1.position.values()) or acct1.cash != 0
 
     app2 = make_app(store, "instance-b")
     with TestClient(app2):
         manager = app2.state.manager
-        for _ in range(100):
-            if LOBBY in manager.runners:
-                break
-            time.sleep(0.05)
+        wait_for(lambda: LOBBY in manager.runners)
         runner2 = manager.runners[LOBBY]
         assert runner2.status == "paused"
         assert runner2.sim.tick == runner1.sim.tick
@@ -219,6 +352,8 @@ def test_recovery_replays_to_identical_state():
         assert runner2.sim.driver.exchange.books["STABLE"].depth() == (
             runner1.sim.driver.exchange.books["STABLE"].depth()
         )
+        # The bot starts again on the new instance, ready for when the lobby resumes.
+        wait_for(lambda: runner2.bots.is_running("g1"))
 
 
 STATIC = "round-1"
@@ -289,17 +424,17 @@ def test_lobby_trades_exactly_one_good():
         assert store.lobbies[LOBBY].status == "draft"
 
 
-def test_trader_is_asked_to_retry_only_while_lobby_recovers():
+def test_monitor_is_asked_to_retry_only_while_lobby_recovers():
     store = make_store()
     store.lobbies[LOBBY].status = "running"  # in the DB, but no runner on this instance yet
     app = make_app(store)
     client = TestClient(app)  # no lifespan, so recovery never actually runs
 
     def close_code() -> int:
-        with client.websocket_connect(f"/ws/trade/{LOBBY}") as t1:
-            t1.send_json({"type": "auth", "token": "user:u1"})
+        with client.websocket_connect(f"/ws/bot/{LOBBY}") as ws:
+            ws.send_json({"type": "auth", "token": "user:u1"})
             with pytest.raises(WebSocketDisconnect) as exc:
-                t1.receive_json()
+                ws.receive_json()
         return exc.value.code
 
     app.state.manager.recovering.add(LOBBY)

@@ -3,7 +3,7 @@
 // in-browser (Pyodide) backtest matches the native Python engine exactly.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { after, before, test } from "node:test";
@@ -79,6 +79,13 @@ const sdk = Object.fromEntries(
     readFileSync(join(WEB, "public/runtimes/sdk", f), "utf8"),
   ]),
 );
+// The Python SDK the browser shares with the engine (synced from engine/bot_sdk).
+const pySdk = Object.fromEntries(
+  JSON.parse(readFileSync(join(WEB, "public/py/bot_sdk/files.json"), "utf8")).map((f) => [
+    f,
+    readFileSync(join(WEB, "public/py/bot_sdk", f), "utf8"),
+  ]),
+);
 const marketCore = Object.fromEntries(
   JSON.parse(readFileSync(join(WEB, "public/py/market_core/files.json"), "utf8")).map((f) => [
     f,
@@ -121,24 +128,25 @@ async function backtest(initBot, data = dataset) {
 }
 
 function nativeBacktest(source, data = dataset) {
-  // Run the worker's own Python harness under CPython with the engine's market_core.
+  // Run the worker's own Python harness under CPython with the engine's market_core and bot_sdk.
   const worker = readFileSync(join(WEB, "public/runtimes/bot-host.js"), "utf8");
-  const decls = worker.slice(worker.indexOf("const SDK_SOURCE"), worker.indexOf("let logs"));
+  const decls = worker.slice(worker.indexOf("const SDK_DIR"), worker.indexOf("let logs"));
   writeFileSync(join(tmp, "harness.py"), new Function(`${decls}; return HARNESS;`)());
   writeFileSync(join(tmp, "bot.py"), source);
   const script = `
 import json, sys
+sys.path.insert(0, sys.argv[5])
 ns = {}
 exec(open(sys.argv[1]).read(), ns)
 class Bytes(bytes):
     def to_bytes(self): return bytes(self)
 bt = ns["_start_backtest"](open(sys.argv[3]).read(), Bytes(open(sys.argv[4], "rb").read()))
-print(ns["_run_backtest"](bt, ns["_PyBot"](open(sys.argv[2]).read()), None, 10**9, 10**9, lambda n: None))
+print(ns["_run_backtest"](bt, ns["_new_bot"](open(sys.argv[2]).read()), None, 10**9, 10**9, lambda n: None))
 `;
   const out = execFileSync(
     "uv",
     ["run", "python", "-c", script, join(tmp, "harness.py"), join(tmp, "bot.py"),
-      join(data.dir, "manifest.json"), join(data.dir, "events.jsonl.gz")],
+      join(data.dir, "manifest.json"), join(data.dir, "events.jsonl.gz"), join(ENGINE, "bot_sdk")],
     { cwd: ENGINE, encoding: "utf8" },
   );
   return JSON.parse(out);
@@ -148,7 +156,7 @@ let pythonResult;
 
 test("python template backtest in Pyodide matches the native engine exactly", { timeout: 300_000 }, async () => {
   const source = TEMPLATES.python;
-  pythonResult = await backtest((h) => h.call("init_python_bot", { source }));
+  pythonResult = await backtest((h) => h.call("init_python_bot", { sdk: pySdk, source }));
   assert.equal(pythonResult.ticks, 400);
   assert.deepEqual(pythonResult.errors, []);
   assert.ok(pythonResult.fills.length > 0, "the template should trade");
@@ -163,7 +171,7 @@ test("python live tick, print() capture and error reporting", { timeout: 120_000
     own_trades: [{ good: "X", price: 101, qty: -1, maker: true }],
     order_depths: { X: { bids: [[99, 4]], asks: [[102, 2]] } }, market_trades: { X: [[101, 1, 1]] },
   };
-  await host.call("init_python_bot", {
+  await host.call("init_python_bot", { sdk: pySdk,
     source: `from trader_sdk import buy, sell\nclass Trader:\n    def run(self, s):\n        print(s.tick, s.price, s.position, s.limit, s.trades, s.my_trades)\n        return [buy(s.price, 2), sell(103, 1)]\n`,
   });
   const { result, logs } = await host.call("tick", { state: JSON.stringify(state) });
@@ -174,19 +182,86 @@ test("python live tick, print() capture and error reporting", { timeout: 120_000
   assert.deepEqual(logs, ["5 100.5 0 10 [(101, 1)] [(101, -1)]"]);
 
   // Returning nothing, or a single order, works too.
-  await host.call("init_python_bot", { source: "from trader_sdk import buy\nclass Trader:\n    def run(self, s):\n        return buy(99)\n" });
+  await host.call("init_python_bot", { sdk: pySdk, source: "from trader_sdk import buy\nclass Trader:\n    def run(self, s):\n        return buy(99)\n" });
   assert.deepEqual(JSON.parse((await host.call("tick", { state: JSON.stringify(state) })).result), {
     cancel_all: true, orders: [{ good: "X", price: 99, qty: 1 }],
   });
-  await host.call("init_python_bot", { source: "class Trader:\n    def run(self, s):\n        pass\n" });
+  await host.call("init_python_bot", { sdk: pySdk, source: "class Trader:\n    def run(self, s):\n        pass\n" });
   assert.deepEqual(JSON.parse((await host.call("tick", { state: JSON.stringify(state) })).result), {
     cancel_all: true, orders: [],
   });
 
-  await host.call("init_python_bot", { source: "class Trader:\n    def run(self, s):\n        return 1 / 0\n" });
+  await host.call("init_python_bot", { sdk: pySdk, source: "class Trader:\n    def run(self, s):\n        return 1 / 0\n" });
   await assert.rejects(host.call("tick", { state: JSON.stringify(state) }), /ZeroDivisionError/);
-  await assert.rejects(host.call("init_python_bot", { source: "x = (" }), /SyntaxError/);
-  await assert.rejects(host.call("init_python_bot", { source: "y = 1" }), /class named Trader/);
+  // Code written for the old multi-good API is pointed at the template.
+  await host.call("init_python_bot", { sdk: pySdk, source: "class Trader:\n    def run(self, s):\n        return s.goods\n" });
+  await assert.rejects(host.call("tick", { state: JSON.stringify(state) }), /state has no 'goods'\..*old bot API/);
+  await assert.rejects(host.call("init_python_bot", { sdk: pySdk, source: "x = (" }), /SyntaxError/);
+  await assert.rejects(host.call("init_python_bot", { sdk: pySdk, source: "y = 1" }), /class named Trader/);
+  // Live bots run on the engine, which has only the standard library; backtests match it.
+  for (const name of ["numpy", "js", "pyodide"]) {
+    await assert.rejects(
+      host.call("init_python_bot", { sdk: pySdk, source: `import ${name}\nclass Trader: pass\n` }),
+      /only Python's standard library/,
+    );
+  }
+});
+
+// States a live bot might see: a wide book, a tight one, a one-sided one and an empty one, with
+// different positions, so each template takes every branch.
+const LIVE_STATES = [
+  [[[9998, 12], [9997, 5]], [[10003, 9]], 0],
+  [[[10000, 3]], [[10002, 4]], 10],
+  [[[9990, 1]], [[10010, 1]], 50],
+  [[[9990, 1]], [], -50],
+  [[], [], 0],
+].map(([bids, asks, position], i) => ({
+  tick: 10_000 + i, goods: ["STABLE"], limits: { STABLE: 50 }, cash: -40_012 * i,
+  position: { STABLE: position }, open_orders: [], own_trades: [], fees_paid: 0,
+  order_depths: { STABLE: { bids, asks } }, market_trades: { STABLE: [[10001, 3, 1]] },
+}));
+
+/** Runs a bot in the engine's own sandbox (engine/server/sandbox.py); one reply per state. */
+function engineReplies(language, file, states) {
+  const out = execFileSync("uv", ["run", "python", "-m", "server.sandbox", "run", language, file], {
+    cwd: ENGINE,
+    encoding: "utf8",
+    input: states.map((s) => JSON.stringify(s)).join("\n") + "\n",
+  });
+  const [ready, ...replies] = out.trim().split("\n").map((line) => JSON.parse(line));
+  assert.equal(ready.ready, true, JSON.stringify(ready));
+  return replies;
+}
+
+test("the engine runs every live template exactly as the browser does", { timeout: 600_000 }, async (t) => {
+  if (!existsSync(join(ENGINE, "wasi-python/python.wasm"))) {
+    t.skip("CPython for WASI isn't installed (python -m server.wasi_python install)");
+    return;
+  }
+  const browserReplies = async () =>
+    Promise.all(LIVE_STATES.map(async (s) => JSON.parse((await host.call("tick", { state: JSON.stringify(s) })).result)));
+
+  writeFileSync(join(tmp, "live.py"), TEMPLATES.python);
+  await host.call("init_python_bot", { sdk: pySdk, source: TEMPLATES.python });
+  const expected = await browserReplies();
+  assert.ok(expected.some((r) => r.orders.length), "the template should quote somewhere");
+  const python = engineReplies("python", join(tmp, "live.py"), LIVE_STATES);
+  assert.deepEqual(python.map((r) => r.error), LIVE_STATES.map(() => null));
+  assert.deepEqual(python.map((r) => r.response), expected);
+
+  const cc = compiler();
+  try {
+    for (const language of ["c", "cpp"]) {
+      const { result: wasm } = await cc.call("compile", { language, source: TEMPLATES[language], sdk });
+      writeFileSync(join(tmp, `live-${language}.wasm`), wasm);
+      await host.call("init_wasm_bot", { wasm: wasm.slice() });
+      assert.deepEqual(await browserReplies(), expected, `${language} in the browser`);
+      const replies = engineReplies(language, join(tmp, `live-${language}.wasm`), LIVE_STATES);
+      assert.deepEqual(replies.map((r) => r.response), expected, `${language} on the engine`);
+    }
+  } finally {
+    await cc.terminate();
+  }
 });
 
 for (const language of ["c", "cpp"]) {
@@ -215,7 +290,7 @@ for (const preset of ["BEST_TIME", "FLAT_MEAN"]) {
   test(`${preset} static templates trade identically in Python, C and C++`, { timeout: 600_000 }, async () => {
     const data = preset === "BEST_TIME" ? bestTime : flatMean;
     const templates = STATIC_TEMPLATES[preset];
-    const python = await backtest((h) => h.call("init_python_bot", { source: templates.python }), data);
+    const python = await backtest((h) => h.call("init_python_bot", { sdk: pySdk, source: templates.python }), data);
     assert.deepEqual(python.errors, []);
     assert.equal(python.rejects, 0);
     assert.deepEqual(python.series, nativeBacktest(templates.python, data).series);

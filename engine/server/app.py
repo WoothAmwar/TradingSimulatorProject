@@ -11,8 +11,8 @@ from typing import Literal
 from fastapi import Depends, FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
 
 from .auth import AuthError, JwksVerifier, Verifier
+from .bots import BotFactory, SandboxFactory
 from .manager import EngineManager, LobbyError
-from .runner import Trader
 from .settings import Settings
 from .store import RestStore, Store
 
@@ -21,8 +21,10 @@ log = logging.getLogger("engine")
 Action = Literal["prepare", "start", "pause", "resume", "stop"]
 
 
-def create_app(store: Store, verifier: Verifier, settings: Settings) -> FastAPI:
-    manager = EngineManager(store, settings)
+def create_app(
+    store: Store, verifier: Verifier, settings: Settings, bot_factory: BotFactory | None = None
+) -> FastAPI:
+    manager = EngineManager(store, settings, bot_factory or SandboxFactory(settings.python_dir))
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -49,7 +51,7 @@ def create_app(store: Store, verifier: Verifier, settings: Settings) -> FastAPI:
             "ok": True,
             "instance": settings.instance_id,
             "lobbies": {
-                lobby_id: {"status": r.status, "tick": r.tick, "traders": len(r.traders)}
+                lobby_id: {"status": r.status, "tick": r.tick, "bots": r.bots.running()}
                 for lobby_id, r in manager.runners.items()
             },
         }
@@ -86,8 +88,10 @@ def create_app(store: Store, verifier: Verifier, settings: Settings) -> FastAPI:
             if runner is not None:
                 runner.viewers.discard(ws)
 
-    @app.websocket("/ws/trade/{lobby_id}")
-    async def trade(ws: WebSocket, lobby_id: str) -> None:
+    @app.websocket("/ws/bot/{lobby_id}")
+    async def bot_monitor(ws: WebSocket, lobby_id: str) -> None:
+        """A group's view of its bot, which runs on the engine: status, console, fills, stats.
+        Members watch their own group; admins may name any group with ``group_id``."""
         if not settings.origin_allowed(ws.headers.get("origin")):
             await ws.close(code=4003)
             return
@@ -99,41 +103,37 @@ def create_app(store: Store, verifier: Verifier, settings: Settings) -> FastAPI:
             await _close(ws, 4401, "authentication failed")
             return
         group_id = await store.user_group(user_id)
+        wanted = hello.get("group_id")
+        if wanted and wanted != group_id:
+            if not await store.is_admin(user_id):
+                await _close(ws, 4403, "you can only watch your own group's bot")
+                return
+            group_id = str(wanted)
         if group_id is None:
             await _close(ws, 4403, "you are not in a group")
             return
         runner = await manager.viewer_runner(lobby_id)
         if runner is None and lobby_id in manager.recovering:
-            # Still being rebuilt after a restart; 1013 isn't final, so the bot reconnects.
+            # Still being rebuilt after a restart; 1013 isn't final, so the page reconnects.
             await _close(ws, 1013, "lobby is recovering; try again shortly")
             return
         if runner is None or runner.status == "finished":
-            await _close(ws, 4404, "lobby is not open for trading")
+            await _close(ws, 4404, "lobby is not live")
             return
         if group_id not in runner.groups:
             runner.groups = await store.lobby_groups(lobby_id)
             if group_id not in runner.groups:
-                await _close(ws, 4403, "your group is not entered in this lobby")
+                await _close(ws, 4403, "this group is not entered in this lobby")
                 return
 
-        trader = Trader(group_id, user_id, ws)
-        await runner.add_trader(trader)
+        await runner.bots.add_monitor(group_id, ws)
         try:
-            while True:
-                try:
-                    msg = await ws.receive_json()
-                except json.JSONDecodeError:
-                    continue
-                if runner.traders.get(group_id) is not trader:
-                    break  # dropped as too slow, or replaced: stop accepting its orders
-                if isinstance(msg, dict):
-                    notice = runner.handle_trader_message(group_id, msg)
-                    if notice is not None:
-                        await ws.send_json(notice)
+            while True:  # monitors only send keep-alives
+                await ws.receive_text()
         except WebSocketDisconnect:
             pass
         finally:
-            runner.remove_trader(trader)
+            runner.bots.remove_monitor(group_id, ws)
 
     return app
 

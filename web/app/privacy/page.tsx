@@ -121,10 +121,12 @@ export default function PrivacyPage() {
         <p>We may disclose information if the law requires it.</p>
       </Section>
 
-      <Section title="Your code runs in your browser">
+      <Section title="Where your code runs">
         <p>
-          Bots run inside a sandbox in your own browser. The exchange server receives only the orders
-          your bot sends; it never runs your code.
+          Backtests run inside a sandbox in your own browser. In live rounds, the exchange server runs
+          your group&apos;s active submission in a sandbox of its own, which cannot reach the network,
+          the server&apos;s data or other groups&apos; bots. Its output is shown only to your group and
+          the organizers.
         </p>
       </Section>
 
