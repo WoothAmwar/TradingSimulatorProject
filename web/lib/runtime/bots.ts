@@ -1,3 +1,4 @@
+import { createClient } from "@/lib/supabase/client";
 import { isLanguage } from "@/lib/templates";
 import { getSandbox, workerScript, type RuntimeWorker } from "./sandbox";
 
@@ -5,6 +6,7 @@ export type StartStatus = (message: string) => void;
 
 const SDK_FILES = ["trader.h", "harness.c", "trader.hpp", "harness.cpp"];
 let sdkPromise: Promise<Record<string, string>> | null = null;
+let pySdkPromise: Promise<Record<string, string>> | null = null;
 const compiled = new Map<string, Uint8Array>();
 
 function loadSdk() {
@@ -12,6 +14,19 @@ function loadSdk() {
     SDK_FILES.map(async (f) => [f, await (await fetch(`/runtimes/sdk/${f}`)).text()] as const),
   ).then(Object.fromEntries);
   return sdkPromise;
+}
+
+/** The Python SDK the engine runs live bots with (synced from engine/bot_sdk). */
+function loadPySdk() {
+  pySdkPromise ??= (async () => {
+    const names: string[] = await (await fetch("/py/bot_sdk/files.json")).json();
+    const files = await Promise.all(
+      names.map(async (n) => [n, await (await fetch(`/py/bot_sdk/${n}`)).text()] as const),
+    );
+    return Object.fromEntries(files);
+  })();
+  pySdkPromise.catch(() => (pySdkPromise = null));
+  return pySdkPromise;
 }
 
 async function sha256(text: string) {
@@ -63,7 +78,7 @@ export async function startBot(
   try {
     if (language === "python") {
       onStatus("Starting Python (first run downloads ~10 MB)…");
-      const { logs } = await worker.call("init_python_bot", { source });
+      const { logs } = await worker.call("init_python_bot", { source, sdk: await loadPySdk() });
       return { worker, logs };
     }
     const wasm = await compileNative(language, source, onStatus);
@@ -74,4 +89,23 @@ export async function startBot(
     worker.terminate();
     throw e;
   }
+}
+
+/**
+ * Compiles a saved C/C++ submission and uploads the build, which the engine runs in live rounds
+ * (it has no compiler of its own). Throws the compiler's messages if the code doesn't compile.
+ */
+export async function uploadLiveBuild(
+  groupId: string,
+  submissionId: string,
+  language: "c" | "cpp",
+  source: string,
+  onStatus: StartStatus,
+): Promise<void> {
+  const wasm = await compileNative(language, source, onStatus);
+  onStatus("Uploading the build for live rounds…");
+  const { error } = await createClient()
+    .storage.from("bot-builds")
+    .upload(`${groupId}/${submissionId}.wasm`, wasm, { contentType: "application/wasm", upsert: true });
+  if (error) throw new Error(`Couldn't upload the build: ${error.message}`);
 }

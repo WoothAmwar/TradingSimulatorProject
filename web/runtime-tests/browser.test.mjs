@@ -65,12 +65,23 @@ after(async () => {
 // The starter templates live in lib/templates.ts, which Node imports with its types stripped.
 const { TEMPLATES: PYTHON_TEMPLATE } = await import(pathToFileURL(join(WEB, "lib/templates.ts")).href);
 
+// Bots may only import the standard library, and `import js` is refused before the code runs.
+// That check is a convenience; the sandbox is the protection, so these probes get past it with
+// __import__ and check what the code could reach.
+const PY_SDK = Object.fromEntries(
+  JSON.parse(readFileSync(join(WEB, "public/py/bot_sdk/files.json"), "utf8")).map((f) => [
+    f,
+    readFileSync(join(WEB, "public/py/bot_sdk", f), "utf8"),
+  ]),
+);
+
 test("python bot runs in a sandboxed, opaque-origin worker", { timeout: 180_000 }, async () => {
-  const out = await page.evaluate(async (source) => {
+  const out = await page.evaluate(async (source, pySdk) => {
     const sb = await window.sandbox.getSandbox();
     const worker = sb.spawn(await window.sandbox.workerScript("/runtimes/bot-host.js"));
     await worker.call("init_python_bot", {
-      source: source + "\nimport js\nprint('origin', js.self.location.origin)\n",
+      sdk: pySdk,
+      source: source + "\njs = __import__('js')\nprint('origin', js.self.location.origin)\n",
     });
     const state = {
       tick: 1, goods: ["X"], limits: { X: 10 }, cash: 0, position: { X: 0 }, open_orders: [], own_trades: [],
@@ -80,7 +91,7 @@ test("python bot runs in a sandboxed, opaque-origin worker", { timeout: 180_000 
     const frame = document.querySelector("iframe");
     worker.terminate();
     return { result: JSON.parse(result), sandbox: frame.getAttribute("sandbox") };
-  }, PYTHON_TEMPLATE.python);
+  }, PYTHON_TEMPLATE.python, PY_SDK);
   assert.equal(out.sandbox, "allow-scripts");
   assert.deepEqual(out.result, {
     cancel_all: true,
@@ -92,15 +103,16 @@ test("python bot runs in a sandboxed, opaque-origin worker", { timeout: 180_000 
 });
 
 test("participant code sees an opaque origin", { timeout: 120_000 }, async () => {
-  const logs = await page.evaluate(async () => {
+  const logs = await page.evaluate(async (pySdk) => {
     const sb = await window.sandbox.getSandbox();
     const worker = sb.spawn(await window.sandbox.workerScript("/runtimes/bot-host.js"));
     const { logs } = await worker.call("init_python_bot", {
-      source: "import js\nprint(js.self.location.origin)\nclass Trader:\n    def run(self, s):\n        return []\n",
+      sdk: pySdk,
+      source: "js = __import__('js')\nprint(js.self.location.origin)\nclass Trader:\n    def run(self, s):\n        return []\n",
     });
     worker.terminate();
     return logs;
-  });
+  }, PY_SDK);
   assert.deepEqual(logs, ["null"]);
 });
 

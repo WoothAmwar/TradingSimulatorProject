@@ -5,102 +5,20 @@
 const PYODIDE_URL = "https://cdn.jsdelivr.net/pyodide/v314.0.7/full/";
 const WASI_SHIM_URL = "https://cdn.jsdelivr.net/npm/@bjorn3/browser_wasi_shim@0.4.2/dist/index.js";
 
-const SDK_SOURCE = `
-from dataclasses import dataclass
-
-
-@dataclass
-class Order:
-    price: int
-    qty: int  # > 0 buys, < 0 sells
-
-
-def buy(price, qty=1):
-    """An order to buy qty units, paying at most price for each."""
-    return Order(price, abs(qty))
-
-
-def sell(price, qty=1):
-    """An order to sell qty units, getting at least price for each."""
-    return Order(price, -abs(qty))
-
-
-class TradingState:
-    """What run(state) gets every tick. Every round trades a single good."""
-
-    def __init__(self, d):
-        good = d["goods"][0]
-        book = d["order_depths"][good]
-        self.tick = d["tick"]
-        self.bids = [tuple(level) for level in book["bids"]]  # offers to buy, highest price first
-        self.asks = [tuple(level) for level in book["asks"]]  # offers to sell, lowest price first
-        self.price = _middle(self.bids, self.asks)
-        self.position = d["position"][good]
-        self.limit = d["limits"][good]
-        self.cash = d["cash"]
-        self.trades = [(price, qty) for price, qty, _ in d["market_trades"][good]]
-        self.my_trades = [(t["price"], t["qty"]) for t in d["own_trades"] if t["good"] == good]
-        self.prices = d.get("prices", {}).get(good, ())  # "best time" rounds: every tick's price
-
-
-def _middle(bids, asks):
-    """Halfway between the best offer to buy and the best offer to sell (or whichever exists)."""
-    if bids and asks:
-        middle = (bids[0][0] + asks[0][0]) / 2
-        return int(middle) if middle.is_integer() else middle
-    if bids or asks:
-        return (bids or asks)[0][0]
-    return None
-`;
+// The Python SDK (trader_sdk.py, bot_runner.py) is shared with the engine, which runs live bots
+// in its own sandbox. The page passes those files in (public/py/bot_sdk, synced from the engine),
+// so a bot behaves the same in a backtest and live.
+const SDK_DIR = "/home/pyodide/bot_sdk";
 
 const HARNESS = `
-import json, sys, types, traceback, operator
+import json, sys, traceback
 
-_sdk = types.ModuleType("trader_sdk")
-exec(${JSON.stringify(SDK_SOURCE)}, _sdk.__dict__)
-sys.modules["trader_sdk"] = _sdk
+sys.path.insert(0, ${JSON.stringify(SDK_DIR)})
 
 
-def _int(x):
-    """Prices and quantities are whole numbers, so a price such as 100.5 is rounded."""
-    try:
-        return operator.index(x)
-    except TypeError:
-        return round(x) if isinstance(x, float) else x
-
-
-def _order(o, good):
-    if not isinstance(o, _sdk.Order):
-        raise TypeError(f"not an order: {o!r}; use buy(price, qty) or sell(price, qty)")
-    return {"good": good, "price": _int(o.price), "qty": _int(o.qty)}
-
-
-def _to_response(out, good):
-    """Whatever run() returns replaces last tick's orders; None or [] means no orders."""
-    if out is None:
-        out = []
-    elif isinstance(out, _sdk.Order):
-        out = [out]
-    if not isinstance(out, (list, tuple)):
-        raise TypeError("run() must return a list of orders, e.g. [buy(100, 5)], or []")
-    return {"cancel_all": True, "orders": [_order(o, good) for o in out]}
-
-
-class _PyBot:
-    def __init__(self, source):
-        mod = types.ModuleType("trader")
-        mod.__file__ = "trader.py"
-        sys.modules["trader"] = mod
-        exec(compile(source, "trader.py", "exec"), mod.__dict__)
-        if not hasattr(mod, "Trader"):
-            raise RuntimeError("your code must define a class named Trader")
-        self.trader = mod.Trader()
-
-    def tick(self, state):
-        return _to_response(self.trader.run(_sdk.TradingState(state)), state["goods"][0])
-
-    def tick_json(self, state_json):
-        return json.dumps(self.tick(json.loads(state_json)))
+def _new_bot(source):
+    import bot_runner
+    return bot_runner.Bot(source)
 
 
 def _start_backtest(manifest_json, events_gz):
@@ -175,6 +93,7 @@ function getPyodide() {
 }
 
 // Flat text state for compiled bots (see public/runtimes/sdk/harness.c). Rounds trade one good.
+// The engine runs live C/C++ bots with a copy of this and textToResponse (server/sandbox.py).
 function stateToText(s) {
   const good = s.goods[0];
   const book = s.order_depths[good] ?? { bids: [], asks: [] };
@@ -231,11 +150,13 @@ async function initWasmBot(wasm) {
 }
 
 const commands = {
-  async init_python_bot({ source }) {
+  // Bots get Python's standard library only, as on the engine: no packages are loaded.
+  async init_python_bot({ source, sdk }) {
     const py = await getPyodide();
-    await py.loadPackagesFromImports(source);
+    py.FS.mkdirTree(SDK_DIR);
+    for (const [name, text] of Object.entries(sdk)) py.FS.writeFile(`${SDK_DIR}/${name}`, text);
     bot?.py?.destroy?.();
-    bot = { kind: "python", py: py.globals.get("_PyBot")(source) };
+    bot = { kind: "python", py: py.globals.get("_new_bot")(source) };
   },
 
   async init_wasm_bot({ wasm }) {

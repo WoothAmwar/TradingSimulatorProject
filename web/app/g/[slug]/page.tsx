@@ -142,7 +142,8 @@ async function Overview({ params }: Pick<PageProps<"/g/[slug]">, "params">) {
             ))}
           </ul>
           <p className="mt-2 text-xs text-muted">
-            One active submission per lobby. Any member can change it or run it from Live trading.
+            One active submission per lobby. The exchange runs it while the round is live; any member can
+            change it, and the new one takes over within seconds.
           </p>
         </section>
 

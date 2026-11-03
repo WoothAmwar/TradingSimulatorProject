@@ -2,29 +2,42 @@
 
 A live, seeded market for algorithmic-trading competitions, in the spirit of IMC Prosperity. Groups
 write bots in Python, C or C++, backtest them in the browser on a public slice of the market, then
-run them live against every other group as makers and takers. `/about` explains the game to students
+pick one to trade live against every other group as makers and takers. The engine runs each
+group's live bot itself, so nobody has to keep a page open. `/about` explains the game to students
 with no finance background.
 
 **The bot API.** Every round trades a single good. Every tick, in every round, the runtime calls the
 bot's `run(state)` with a flat view of that good: `state.price` (halfway between the best bid and
 ask), `state.bids`, `state.asks`, `state.position`, `state.limit`, `state.cash`, `state.trades`,
 `state.my_trades`, and in best-time rounds `state.prices`. The bot returns orders made with
-`buy(price, qty)` and `sell(price, qty)`, which replace last tick's orders. The SDKs live in
-`web/public/runtimes/` (Python inside `bot-host.js`, C/C++ in `sdk/`); the engine's wire protocol
-underneath is unchanged and still keyed by good.
+`buy(price, qty)` and `sell(price, qty)`, which replace last tick's orders. Python bots may import
+only the standard library. The Python SDK lives in `engine/bot_sdk/` (copied to
+`web/public/py/bot_sdk/` by `npm run sync:engine`), the C/C++ SDK in `web/public/runtimes/sdk/`;
+the engine's wire protocol underneath is unchanged and still keyed by good.
 
 ```
-Browser (Next.js on Vercel) ── public market feed / trading socket ──▶ Engine (FastAPI on Render)
-  bots run here, sandboxed                                               tick loop + matching
-            └───────────── Supabase: Postgres (RLS) · Auth (Google, GitHub) · Storage ◀────┘
+Browser (Next.js on Vercel) ── market feed / bot monitor ──▶ Engine (FastAPI on Render)
+  editor, backtests (sandboxed),                              tick loop + matching,
+  C/C++ compiler                                              live bots (wasmtime sandbox)
+            └──────── Supabase: Postgres (RLS) · Auth (Google, GitHub) · Storage ◀────┘
 ```
+
+**Live bots** run on the engine (`engine/server/sandbox.py`, `bots.py`). Every Python bot gets
+its own CPython-for-WASI interpreter under wasmtime; C/C++ bots run the WebAssembly the browser
+compiled when the code was saved (bucket `bot-builds`). A bot sees only read-only files it needs:
+no network, no environment, no other bot. Each runs on its own thread at the lowest CPU priority,
+limited to 64 MB, and a watchdog stops any call that runs longer than 10 s; a bot that crashes
+restarts after a delay (10 s, then longer), with its memory cleared. A newly picked submission
+takes over within 5 s. Members watch their bot's status, console, fills and stats in **Live
+trading** (`/ws/bot`).
 
 | Path | What |
 | --- | --- |
 | `engine/market_core/` | Seeded price models, bot order flow, order book and exchange (pure Python) |
-| `engine/server/` | Lobby runner (tick loop), admin API, WebSockets, Supabase persistence |
+| `engine/server/` | Lobby runner (tick loop), live bots and their sandbox, admin API, WebSockets, Supabase persistence |
+| `engine/bot_sdk/` | Python bot SDK, shared by the browser and the engine's sandbox |
 | `web/` | Next.js 16 app: market view, admin panel, group workspaces, in-browser runtimes |
-| `web/public/runtimes/` | Sandboxed workers: Pyodide bot host and engine, in-browser Clang, C/C++ SDK |
+| `web/public/runtimes/` | Sandboxed workers for backtests: Pyodide bot host and engine, in-browser Clang, C/C++ SDK |
 | `supabase/migrations/` | Schema, RLS policies and RPCs (applied with the Supabase MCP) |
 | `render.yaml` | Render Blueprint for the engine |
 
@@ -91,6 +104,7 @@ Prerequisites: [uv](https://docs.astral.sh/uv/), Node 20+.
 # Engine
 cd engine
 cp .env.example .env            # add the Supabase secret key
+uv run python -m server.wasi_python install   # CPython for WASI, which runs Python bots
 set -a; source .env; set +a
 uv run uvicorn server.main:app --reload --port 8000
 
@@ -100,6 +114,9 @@ npm install
 npm run dev                     # http://localhost:3000; .env.local points at Supabase + engine
 ```
 
+Run a bot in the engine's sandbox, one JSON state per line in and one reply per line out:
+`uv run python -m server.sandbox run python trader.py < states.jsonl` (or `c`/`cpp` with a `.wasm`).
+
 A dataset can also be built without Supabase:
 `cd engine && uv run python -m scripts.make_dataset --seed 42 --out out/demo`. Add
 `--preset BEST_TIME` or `--preset FLAT_MEAN` to build a static round instead.
@@ -107,7 +124,7 @@ A dataset can also be built without Supabase:
 ## Tests
 
 ```bash
-cd engine && uv run pytest                      # market model, exchange, determinism, server, recovery
+cd engine && uv run pytest                      # market model, exchange, determinism, server, recovery, sandbox
 cd web && npx tsc --noEmit && npx eslint . && npx next build
 cd web/runtime-tests && npm install && npm test # bot workers under Node + headless Chrome (needs network)
 ```
@@ -149,14 +166,19 @@ Everything runs on free plans: Render Free, Supabase Free and Vercel Hobby.
 
 **Render Free web service** (0.1 CPU, 512 MB, one instance)
 - *Spin-down.* It sleeps after 15 minutes without inbound traffic. WebSocket messages from the
-  browser count. Live bots send orders every tick, and open pages send a keep-alive every 4 minutes
-  while a lobby is scheduled, running or paused. Waking takes about a minute; the admin panel
-  wakes the engine when it loads.
+  browser count, and open pages send a keep-alive every 4 minutes while a lobby is scheduled,
+  running or paused. Bots run on the engine, so while a lobby is running or paused the engine also
+  requests its own public URL (`RENDER_EXTERNAL_URL`, set by Render) every 4 minutes. Waking takes
+  about a minute; the admin panel wakes the engine when it loads.
 - *Restarts.* Render may restart a free service at any time. The engine rebuilds every running or
   paused lobby by replaying its recorded orders from Supabase. The market freezes for a minute or
   two, then continues exactly where it was. Browsers reconnect on their own.
 - *CPU.* Building a dataset or starting a lobby takes roughly 10–20 seconds on 0.1 CPU. Don't build
-  datasets while another lobby is live.
+  datasets while another lobby is live. Bots run below the tick loop's priority, so a slow bot
+  misses ticks rather than slowing the market.
+- *Memory.* A Python bot takes about 4 MB (measured: 20 bots added 78 MB), a C/C++ bot less. The
+  Docker build precompiles CPython for WASI and its standard library, adding about 70 MB to the
+  image, so bots start in milliseconds.
 - *Hours.* Each workspace gets 750 free instance hours a month, and sleeping doesn't count. One
   service running all month fits, as long as no other free services share the workspace.
 
@@ -178,8 +200,8 @@ Everything runs on free plans: Render Free, Supabase Free and Vercel Hobby.
 1. Admin (home page) creates groups and shares each group's invite link.
 2. Admin creates a lobby: goods, tick length, K, duration, N groups, optional seed.
 3. Admin enters groups and clicks **Build dataset & publish**. Groups can now backtest.
-4. Groups save submissions and pick one active submission per lobby. One member opens **Live
-   trading** and starts the bot. It runs in that tab.
+4. Groups save submissions and pick one active submission per lobby. The engine runs it once the
+   lobby starts; nobody needs to keep a page open. **Live trading** shows what it's doing.
 5. Admin clicks **Start live trading**. The lobby ends by itself after its live ticks, or when **End
    lobby** is clicked. Final results are stored and shown on the home page.
 6. Static rounds can run at any point. Under **Static rounds**, the admin creates a round from a

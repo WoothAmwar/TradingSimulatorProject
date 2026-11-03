@@ -5,7 +5,7 @@ import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { saveSubmission, submitRoundScore } from "@/app/actions/group";
 import { STATIC_PRESETS, STATUS_STYLES, statusLabel, type StaticPreset } from "@/lib/lobby";
 import { downloadDatasetFile, loadPricePath, runBacktest, type BacktestResult } from "@/lib/runtime/backtest";
-import { startBot } from "@/lib/runtime/bots";
+import { startBot, uploadLiveBuild } from "@/lib/runtime/bots";
 import type { RuntimeWorker } from "@/lib/runtime/sandbox";
 import { isLanguage, LANGUAGES, templateFor, type CodeTarget, type Language } from "@/lib/templates";
 import { CodeEditor } from "./code-editor";
@@ -122,11 +122,24 @@ export function CodeWorkspace({
 
   const save = () =>
     startSave(async () => {
-      const r = await saveSubmission({ groupId, ...draft, lobbyId: round?.id ?? null });
-      if (r.ok) {
-        setSavedId(r.value ?? null);
-        setSaveError(null);
-      } else setSaveError(r.error);
+      const code = draft;
+      const r = await saveSubmission({ groupId, ...code, lobbyId: round?.id ?? null });
+      if (!r.ok || !r.value) {
+        setSaveError(r.ok ? "Saving failed" : r.error);
+        return;
+      }
+      setSavedId(r.value);
+      setSaveError(null);
+      // The engine runs live bots itself, but compiling C/C++ happens here, in the browser.
+      if (!round && code.language !== "python") {
+        try {
+          await uploadLiveBuild(groupId, r.value, code.language, code.source, setStatus);
+        } catch (e) {
+          setSaveError(`Saved, but it can't run in live rounds yet:\n${(e as Error).message}`);
+        } finally {
+          setStatus(null);
+        }
+      }
     });
 
   /** Runs `code` against a lobby's published data; returns the result, or null if it failed. */
@@ -274,7 +287,8 @@ export function CodeWorkspace({
             .
           </p>
         )}
-        {saveError && <p className="text-sm text-ask">{saveError}</p>}
+        {saving && status && <p className="text-xs text-muted">{status}</p>}
+        {saveError && <p className="whitespace-pre-wrap text-sm text-ask">{saveError}</p>}
         <CodeEditor
           language={draft.language}
           value={draft.source}

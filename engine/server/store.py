@@ -29,6 +29,9 @@ class Store(Protocol):
     async def load_lobby(self, lobby_id: str) -> LobbyRecord | None: ...
     async def load_secret(self, lobby_id: str) -> tuple[int, dict]: ...
     async def lobby_groups(self, lobby_id: str) -> dict[str, str]: ...
+    async def lobby_selections(self, lobby_id: str) -> list[dict]: ...
+    async def submission(self, submission_id: str) -> dict | None: ...
+    async def bot_build(self, group_id: str, submission_id: str) -> bytes | None: ...
     async def lobbies_with_status(self, statuses: list[str]) -> list[str]: ...
     async def update_lobby(self, lobby_id: str, fields: dict) -> None: ...
     async def save_dataset(
@@ -104,6 +107,35 @@ class RestStore:
             "lobby_entries", {"select": "group_id,groups(name)", "lobby_id": f"eq.{lobby_id}"}
         )
         return {r["group_id"]: r["groups"]["name"] for r in rows}
+
+    async def lobby_selections(self, lobby_id: str) -> list[dict]:
+        """Each entered group with its active submission's id (or None)."""
+        rows = await self._get(
+            "lobby_entries",
+            {"select": "group_id,active_submission_id,groups(name)", "lobby_id": f"eq.{lobby_id}"},
+        )
+        return [
+            {
+                "group_id": r["group_id"],
+                "name": r["groups"]["name"],
+                "submission_id": r["active_submission_id"],
+            }
+            for r in rows
+        ]
+
+    async def submission(self, submission_id: str) -> dict | None:
+        rows = await self._get(
+            "submissions", {"select": "id,title,language,source", "id": f"eq.{submission_id}"}
+        )
+        return rows[0] if rows else None
+
+    async def bot_build(self, group_id: str, submission_id: str) -> bytes | None:
+        """A C/C++ submission's WebAssembly, uploaded by the browser that saved it."""
+        res = await self._http.get(f"/storage/v1/object/bot-builds/{group_id}/{submission_id}.wasm")
+        if res.status_code in (400, 404):  # Storage reports a missing object as either
+            return None
+        res.raise_for_status()
+        return res.content
 
     async def lobbies_with_status(self, statuses: list[str]) -> list[str]:
         """Live lobbies only: static rounds never have a tick loop to recover."""
@@ -202,6 +234,9 @@ class MemoryStore:
     lobbies: dict[str, LobbyRecord] = field(default_factory=dict)
     secrets: dict[str, tuple[int, dict]] = field(default_factory=dict)
     entries: dict[str, list[str]] = field(default_factory=lambda: defaultdict(list))
+    active: dict[tuple[str, str], str] = field(default_factory=dict)  # (lobby, group) -> submission
+    submissions: dict[str, dict] = field(default_factory=dict)
+    builds: dict[tuple[str, str], bytes] = field(default_factory=dict)  # (group, submission)
     datasets: dict[str, tuple[dict[str, bytes], dict]] = field(default_factory=dict)
     tables: dict[str, list[dict]] = field(default_factory=lambda: defaultdict(list))
     results_rows: dict[str, list[dict]] = field(default_factory=dict)
@@ -224,6 +259,22 @@ class MemoryStore:
 
     async def lobby_groups(self, lobby_id: str) -> dict[str, str]:
         return {g: self.group_names[g] for g in self.entries[lobby_id]}
+
+    async def lobby_selections(self, lobby_id: str) -> list[dict]:
+        return [
+            {
+                "group_id": g,
+                "name": self.group_names[g],
+                "submission_id": self.active.get((lobby_id, g)),
+            }
+            for g in self.entries[lobby_id]
+        ]
+
+    async def submission(self, submission_id: str) -> dict | None:
+        return self.submissions.get(submission_id)
+
+    async def bot_build(self, group_id: str, submission_id: str) -> bytes | None:
+        return self.builds.get((group_id, submission_id))
 
     async def lobbies_with_status(self, statuses: list[str]) -> list[str]:
         return [

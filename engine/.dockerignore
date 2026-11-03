@@ -7,3 +7,4 @@ scripts
 .ruff_cache
 .hypothesis
 .env*
+wasi-python

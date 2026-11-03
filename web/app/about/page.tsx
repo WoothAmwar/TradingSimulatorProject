@@ -212,7 +212,7 @@ export default function AboutPage() {
             On <strong>Overview</strong>, choose it as your team&apos;s bot for the live round.
           </li>
           <li>
-            When the live round starts, press start in <strong>Live trading</strong> and keep that tab open.
+            During the live round the exchange runs it for you; watch it in <strong>Live trading</strong>.
           </li>
           <li>
             For static rounds, pick the round in the editor and <strong>Save &amp; submit</strong> while it&apos;s open.
