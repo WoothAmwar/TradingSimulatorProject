@@ -39,6 +39,7 @@ class Store(Protocol):
     ) -> None: ...
     async def order_batches(self, lobby_id: str) -> list[dict]: ...
     async def market_history(self, lobby_id: str) -> list[dict]: ...
+    async def participant_fills(self, lobby_id: str) -> list[dict]: ...
     async def results(self, lobby_id: str) -> list[dict]: ...
     async def insert(self, table: str, rows: list[dict]) -> None: ...
     async def replace_results(self, lobby_id: str, rows: list[dict]) -> None: ...
@@ -187,6 +188,16 @@ class RestStore:
             {"select": "tick,good,mid", "lobby_id": f"eq.{lobby_id}", "order": "tick"},
         )
 
+    async def participant_fills(self, lobby_id: str) -> list[dict]:
+        return await self._get(
+            "participant_fills",
+            {
+                "select": "tick,good,price,qty,buyer_group,seller_group,aggressor",
+                "lobby_id": f"eq.{lobby_id}",
+                "order": "id",
+            },
+        )
+
     async def results(self, lobby_id: str) -> list[dict]:
         return await self._get(
             "lobby_results",
@@ -298,6 +309,9 @@ class MemoryStore:
 
     async def market_history(self, lobby_id: str) -> list[dict]:
         return [r for r in self.tables["market_snapshots"] if r["lobby_id"] == lobby_id]
+
+    async def participant_fills(self, lobby_id: str) -> list[dict]:
+        return [r for r in self.tables["participant_fills"] if r["lobby_id"] == lobby_id]
 
     async def results(self, lobby_id: str) -> list[dict]:
         return [

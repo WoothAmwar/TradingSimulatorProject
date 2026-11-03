@@ -38,8 +38,10 @@ class TradingState:
         good = d["goods"][0]
         book = d["order_depths"][good]
         self.tick = d["tick"]
-        self.bids = [tuple(level) for level in book["bids"]]  # offers to buy, highest price first
-        self.asks = [tuple(level) for level in book["asks"]]  # offers to sell, lowest price first
+        # Other traders' offers (a bot's own resting orders aren't in them): buys highest first,
+        # sells lowest first.
+        self.bids = [tuple(level) for level in book["bids"]]
+        self.asks = [tuple(level) for level in book["asks"]]
         self.price = _middle(self.bids, self.asks)
         self.position = d["position"][good]
         self.limit = d["limits"][good]

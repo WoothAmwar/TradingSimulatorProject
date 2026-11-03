@@ -1,9 +1,10 @@
-"""Multi-good exchange: risk checks, matching, accounting and order expiry."""
+"""Multi-good exchange: risk checks, price bands, matching, accounting and order expiry."""
 
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from dataclasses import dataclass, field
+from collections.abc import Sequence
+from dataclasses import dataclass, field, replace
 
 from .book import OrderBook
 from .types import (
@@ -31,6 +32,7 @@ class ExchangeRules:
     maker_fee: int = 0  # cash per unit, charged to participants only (negative = rebate)
     taker_fee: int = 0
     max_price: int = 10_000_000
+    price_band: float = 0.01  # share of the price a participant's order may reach past it; 0: off
 
     def to_dict(self) -> dict:
         return {
@@ -41,6 +43,7 @@ class ExchangeRules:
             "maker_fee": self.maker_fee,
             "taker_fee": self.taker_fee,
             "max_price": self.max_price,
+            "price_band": self.price_band,
         }
 
     @classmethod
@@ -53,6 +56,7 @@ class ExchangeRules:
             maker_fee=d.get("maker_fee", 0),
             taker_fee=d.get("taker_fee", 0),
             max_price=d.get("max_price", 10_000_000),
+            price_band=d.get("price_band", 0.01),
         )
 
 
@@ -88,6 +92,7 @@ class Exchange:
         self._open_qty: Counter[tuple[str, str, int]] = Counter()  # (owner, good, side) -> qty
         self._expiry: dict[int, list[int]] = defaultdict(list)
         self._new_this_tick: Counter[str] = Counter()
+        self.bands: dict[str, tuple[int, int]] = {}  # good -> (lowest sell, highest buy) this tick
 
     def account(self, owner: str) -> Account:
         acct = self.accounts.get(owner)
@@ -110,6 +115,63 @@ class Exchange:
                     log.cancelled.append(order)
                     break
 
+    def set_bands(self) -> None:
+        """Fixes each good's price band for the tick from the book as it opens. A participant's
+        buy may reach ``price_band`` above the middle price (or the best ask, if that's higher);
+        a sell, as far below it. Prices past the band are moved to its edge, so a "buy at any
+        price" order can't rest at an absurd price that everyone else then sells into."""
+        if self.rules.price_band <= 0:
+            return
+        for good, book in self.books.items():
+            bid, ask = book.best_bid(), book.best_ask()
+            if bid is None and ask is None:
+                continue  # an empty book keeps the last band
+            if bid is not None and ask is not None:
+                mid = (bid + ask) / 2
+            else:
+                mid = bid if bid is not None else ask
+            reach = mid * self.rules.price_band
+            lowest, highest = -int(-(mid - reach) // 1), int((mid + reach) // 1)
+            if bid is not None:
+                lowest = min(lowest, bid)
+            if ask is not None:
+                highest = max(highest, ask)
+            self.bands[good] = (max(1, lowest), highest)
+
+    def apply_batch(self, tick: int, actions: Sequence[Action], log: TickLog) -> None:
+        """One participant's actions for a tick, in order. A batch that starts by cancelling the
+        owner's orders and then sends some of them again unchanged (same good, side, price and
+        remaining quantity) leaves those in the book, so they keep their place in line, as
+        untouched orders do on a real exchange. Changed and new orders join the back."""
+        actions = list(actions)
+        if actions and isinstance(actions[0], CancelAll):
+            actions = self._keep_unchanged(actions[0], actions[1:])
+        for action in actions:
+            self.apply(tick, action, log)
+
+    def _keep_unchanged(self, cancel_all: CancelAll, rest: list[Action]) -> list[Action]:
+        owner = cancel_all.owner
+        resting = [
+            o for o in self.open_orders(owner) if cancel_all.good in (None, o.good)
+        ]  # oldest first
+        waiting: dict[tuple, list[Order]] = defaultdict(list)
+        for o in resting:
+            waiting[(o.good, o.side, o.price, o.qty, o.client_id)].append(o)
+        kept: set[int] = set()
+        new: list[Action] = []
+        for action in rest:
+            if isinstance(action, NewOrder) and action.tif == "GTC" and action.ttl is None:
+                a = self._within_band(action)
+                same = waiting.get((a.good, a.side, a.price, a.qty, a.client_id))
+                if same:
+                    kept.add(same.pop(0).id)
+                    continue
+            new.append(action)
+        if not kept:
+            return [cancel_all, *rest]
+        cancels: list[Action] = [Cancel(owner, o.id) for o in resting if o.id not in kept]
+        return cancels + new
+
     def apply(self, tick: int, action: Action, log: TickLog) -> None:
         if isinstance(action, NewOrder):
             self._new_order(tick, action, log)
@@ -122,7 +184,22 @@ class Exchange:
         else:  # pragma: no cover - guarded by typing
             raise TypeError(f"unknown action {action!r}")
 
+    def _within_band(self, a: NewOrder) -> NewOrder:
+        """A participant's order with its price moved inside the tick's band, if it was past it."""
+        band = self.bands.get(a.good)
+        if band is None or is_bot(a.owner):
+            return a
+        if not isinstance(a.price, int) or isinstance(a.price, bool):
+            return a  # rejected by _check
+        lowest, highest = band
+        if a.side == BUY and a.price > highest:
+            return replace(a, price=highest)
+        if a.side == SELL and a.price < lowest:
+            return replace(a, price=lowest)
+        return a
+
     def _new_order(self, tick: int, a: NewOrder, log: TickLog) -> None:
+        a = self._within_band(a)
         reason = self._check(a)
         if reason is not None:
             log.rejects.append(Reject(a.owner, reason, client_id=a.client_id))

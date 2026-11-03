@@ -98,15 +98,23 @@ class OrderBook:
                     self._drop_level(opp, best)
         return fills, self_cancelled
 
-    def depth(self, levels: int | None = None) -> tuple[list[list[int]], list[list[int]]]:
-        """Aggregated ``[price, qty]`` levels: bids best-first (descending), asks ascending."""
-        bid_prices = self._prices[BUY][::-1]
-        ask_prices = self._prices[SELL]
-        if levels is not None:
-            bid_prices, ask_prices = bid_prices[:levels], ask_prices[:levels]
-        bids = [[p, sum(o.qty for o in self._levels[BUY][p])] for p in bid_prices]
-        asks = [[p, sum(o.qty for o in self._levels[SELL][p])] for p in ask_prices]
-        return bids, asks
+    def depth(
+        self, levels: int | None = None, exclude: str | None = None
+    ) -> tuple[list[list[int]], list[list[int]]]:
+        """Aggregated ``[price, qty]`` levels: bids best-first (descending), asks ascending.
+        ``exclude`` leaves out one owner's orders (and levels only they were at)."""
+        return self._side_depth(BUY, levels, exclude), self._side_depth(SELL, levels, exclude)
+
+    def _side_depth(self, side: int, levels: int | None, exclude: str | None) -> list[list[int]]:
+        prices = self._prices[side][::-1] if side == BUY else self._prices[side]
+        out: list[list[int]] = []
+        for p in prices:
+            if levels is not None and len(out) >= levels:
+                break
+            qty = sum(o.qty for o in self._levels[side][p] if o.owner != exclude)
+            if qty:
+                out.append([p, qty])
+        return out
 
     def _drop_level(self, side: int, price: int) -> None:
         del self._levels[side][price]

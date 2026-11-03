@@ -2,6 +2,7 @@
 
 import { useState, useTransition } from "react";
 import { setActiveSubmission } from "@/app/actions/group";
+import { formatLocalTime, useHydrated } from "@/components/local-time";
 
 export function ActiveSubmissionPicker({
   lobbyId,
@@ -10,10 +11,14 @@ export function ActiveSubmissionPicker({
 }: {
   lobbyId: string;
   activeId: string | null;
-  options: { id: string; label: string }[];
+  options: { id: string; title: string; createdAt: string; detail: string }[];
 }) {
   const [pending, start] = useTransition();
   const [error, setError] = useState<string | null>(null);
+  const hydrated = useHydrated();
+  // The save time tells versions with the same title apart; it comes early so it isn't cut off.
+  const label = (o: (typeof options)[number]) =>
+    [o.title, hydrated ? formatLocalTime(o.createdAt) : null, o.detail].filter(Boolean).join(" · ");
   return (
     <div className="flex items-center gap-2">
       <select
@@ -32,7 +37,7 @@ export function ActiveSubmissionPicker({
         </option>
         {options.map((o) => (
           <option key={o.id} value={o.id}>
-            {o.label}
+            {label(o)}
           </option>
         ))}
       </select>

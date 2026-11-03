@@ -86,12 +86,15 @@ export function AdminPanel({ data, engineUrl }: { data: AdminData; engineUrl: st
   );
 }
 
+/** Invite codes are 8 characters, shown in two groups of four (K7QM-X2PD) so they are easy to type. */
+const inviteCode = (token: string) => (token.length === 8 ? `${token.slice(0, 4)}-${token.slice(4)}` : token);
+
 function GroupsAdmin({ groups }: { groups: AdminData["groups"] }) {
   const { pending, error, exec } = useAction();
   const [copied, setCopied] = useState<string | null>(null);
 
   const copyInvite = async (token: string) => {
-    await navigator.clipboard.writeText(`${window.location.origin}/join/${token}`);
+    await navigator.clipboard.writeText(`${window.location.origin}/join/${inviteCode(token)}`);
     setCopied(token);
     setTimeout(() => setCopied(null), 1500);
   };
@@ -120,7 +123,8 @@ function GroupsAdmin({ groups }: { groups: AdminData["groups"] }) {
                 </a>
                 <span className="num ml-2 text-xs text-muted">/g/{g.slug}</span>
               </div>
-              <div className="flex gap-2">
+              <div className="flex items-center gap-2">
+                {g.token && <span className="num text-sm">/join/{inviteCode(g.token)}</span>}
                 {g.token && (
                   <button className="btn" onClick={() => copyInvite(g.token!)}>
                     {copied === g.token ? "Copied!" : "Copy invite link"}

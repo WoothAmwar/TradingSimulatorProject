@@ -6,6 +6,34 @@ export type Trade = [price: number, qty: number, aggressor: 1 | -1];
 // `online`: the group's bot is connected (sent while the lobby runs, not in final results).
 export type LeaderRow = { group_id: string; name: string; pnl: number; online?: boolean };
 
+/** One side of a group trade: the group, or null for the computer traders. */
+export type TradeParty = { id: string; name: string } | null;
+
+/** A fill a group took part in (engine/server/trades.py). */
+export type GroupTrade = {
+  tick: number;
+  good: string;
+  price: number;
+  qty: number;
+  aggressor: 1 | -1; // the side that took the price
+  mid: number | null; // the market price when the tick opened
+  buyer: TradeParty;
+  seller: TradeParty;
+};
+
+/** A group's totals for the round. `edge`: how much better than the market price, times units. */
+export type GroupStats = {
+  name: string;
+  trades: number;
+  bought: number;
+  sold: number;
+  spent: number;
+  received: number;
+  edge: number;
+  with_groups: number;
+  took: number;
+};
+
 export type SnapshotMessage = {
   type: "snapshot";
   status: string;
@@ -15,6 +43,8 @@ export type SnapshotMessage = {
   history: Record<string, [tick: number, mid: number][]>;
   books: Record<string, Book>;
   leaderboard: LeaderRow[];
+  group_trades?: GroupTrade[]; // the most recent ones
+  group_stats?: Record<string, GroupStats>; // group id -> totals
 };
 
 export type TickMessage = {
@@ -28,7 +58,10 @@ export type TickMessage = {
 
 export type StatusMessage = { type: "status"; status: string; tick: number | null };
 
-export type FeedMessage = SnapshotMessage | TickMessage | StatusMessage;
+/** Sent when a tick closes with group trades in it. */
+export type TradesMessage = { type: "trades"; tick: number; trades: GroupTrade[] };
+
+export type FeedMessage = SnapshotMessage | TickMessage | StatusMessage | TradesMessage;
 
 export function wsUrl(engineUrl: string, path: string) {
   return engineUrl.replace(/^http/, "ws") + path;
@@ -68,7 +101,7 @@ export function connectFeed(
     };
     ws.onmessage = (ev) => {
       const msg: FeedMessage = JSON.parse(ev.data);
-      if (msg.type !== "tick") active = ACTIVE.has(msg.status);
+      if (msg.type === "snapshot" || msg.type === "status") active = ACTIVE.has(msg.status);
       onMessage(msg);
     };
     ws.onclose = () => {

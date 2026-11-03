@@ -31,7 +31,7 @@ async function Join({ params }: Pick<PageProps<"/join/[token]">, "params">) {
       <>
         <h1 className="text-lg font-semibold">Invite link not valid</h1>
         <p className="mt-2 text-sm text-muted">
-          It may have been rotated. Ask an admin for a fresh link.
+          Check the code for typos, or ask an admin for a fresh link.
         </p>
       </>
     );

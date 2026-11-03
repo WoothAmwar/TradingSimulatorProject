@@ -1,7 +1,17 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { connectFeed, wsUrl, type Book, type FeedMessage, type LeaderRow, type Trade } from "@/lib/feed";
+import {
+  connectFeed,
+  wsUrl,
+  type Book,
+  type FeedMessage,
+  type GroupStats,
+  type GroupTrade,
+  type LeaderRow,
+  type Trade,
+} from "@/lib/feed";
+import { addTrades, GroupTrades, TRADE_HISTORY } from "./group-trades";
 import { OrderBook } from "./order-book";
 import { PriceChart, type PriceChartHandle } from "./price-chart";
 import { Scoreboard, type ScoreboardData } from "./scoreboard";
@@ -23,6 +33,8 @@ export function LiveMarket({
   scoreboard: ScoreboardData;
 }) {
   const charts = useRef<Record<string, PriceChartHandle | null>>({});
+  const tradeChart = useRef<PriceChartHandle | null>(null);
+  const tradeGood = goods[0]; // each lobby trades one good
   const [connected, setConnected] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
   const [tick, setTick] = useState<number | null>(null);
@@ -30,6 +42,8 @@ export function LiveMarket({
   const [mids, setMids] = useState<Record<string, number | null>>({});
   const [tape, setTape] = useState<Record<string, TapeEntry[]>>({});
   const [leaders, setLeaders] = useState<LeaderRow[]>([]);
+  const [groupTrades, setGroupTrades] = useState<GroupTrade[]>([]);
+  const [groupStats, setGroupStats] = useState<Record<string, GroupStats>>({});
 
   useEffect(() => {
     const handle = (msg: FeedMessage) => {
@@ -38,11 +52,14 @@ export function LiveMarket({
         setTick(msg.tick);
         setBooks(msg.books);
         setLeaders(msg.leaderboard);
+        setGroupTrades(msg.group_trades ?? []);
+        setGroupStats(msg.group_stats ?? {});
         for (const [good, points] of Object.entries(msg.history)) {
           charts.current[good]?.setHistory(points);
           const last = points[points.length - 1];
           if (last) setMids((m) => ({ ...m, [good]: last[1] }));
         }
+        tradeChart.current?.setHistory(msg.history[tradeGood] ?? []);
       } else if (msg.type === "tick") {
         setTick(msg.tick);
         setBooks(msg.books);
@@ -50,6 +67,8 @@ export function LiveMarket({
         for (const [good, mid] of Object.entries(msg.mids)) {
           if (mid !== null) charts.current[good]?.push(msg.tick, mid);
         }
+        const mid = msg.mids[tradeGood];
+        if (mid != null) tradeChart.current?.push(msg.tick, mid);
         setTape((prev) => {
           const next = { ...prev };
           for (const [good, trades] of Object.entries(msg.trades)) {
@@ -63,11 +82,14 @@ export function LiveMarket({
       } else if (msg.type === "status") {
         setStatus(msg.status);
         setTick(msg.tick);
+      } else if (msg.type === "trades") {
+        setGroupTrades((prev) => [...prev, ...msg.trades].slice(-TRADE_HISTORY));
+        setGroupStats((prev) => addTrades(prev, msg.trades));
       }
     };
     const feed = connectFeed(wsUrl(engineUrl, `/ws/market/${lobbyId}`), handle, setConnected);
     return () => feed.close();
-  }, [engineUrl, lobbyId]);
+  }, [engineUrl, lobbyId, tradeGood]);
 
   return (
     <div className="space-y-4">
@@ -124,6 +146,16 @@ export function LiveMarket({
           </ol>
         </div>
       </div>
+
+      {tradeGood && (
+        <GroupTrades
+          ref={tradeChart}
+          good={tradeGood}
+          trades={groupTrades}
+          stats={groupStats}
+          groups={leaders.map((r) => ({ id: r.group_id, name: r.name }))}
+        />
+      )}
 
       <Scoreboard {...scoreboard} live={{ name: lobbyName, status, leaders }} />
     </div>

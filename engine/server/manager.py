@@ -19,6 +19,7 @@ from .bots import BotFactory
 from .runner import LobbyRunner
 from .settings import Settings
 from .store import LobbyRecord, Store
+from .trades import TradeLog
 
 log = logging.getLogger("engine.manager")
 
@@ -180,10 +181,13 @@ class EngineManager:
             return None
         history: dict[str, list[list[float]]] = defaultdict(list)
         leaderboard: list[dict] = []
+        trades = TradeLog()
         if lobby.status == "finished":
+            mids: dict[tuple[int, str], float] = {}
             for row in await self.store.market_history(lobby_id):
                 if row["mid"] is not None:
                     history[row["good"]].append([row["tick"], float(row["mid"])])
+                    mids[(row["tick"], row["good"])] = float(row["mid"])
             leaderboard = [
                 {
                     "group_id": r["group_id"],
@@ -192,6 +196,9 @@ class EngineManager:
                 }
                 for r in await self.store.results(lobby_id)
             ]
+            names = {r["group_id"]: r["name"] for r in leaderboard}
+            fills = await self.store.participant_fills(lobby_id)
+            trades = TradeLog.from_rows(fills, mids, names)
         return {
             "type": "snapshot",
             "status": lobby.status,
@@ -201,6 +208,7 @@ class EngineManager:
             "history": history,
             "books": {},
             "leaderboard": leaderboard,
+            **trades.snapshot(),
         }
 
     # Admin actions ------------------------------------------------------------------------

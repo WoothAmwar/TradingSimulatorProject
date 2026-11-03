@@ -26,6 +26,7 @@ from market_core.types import Action, CancelAll, Fill, action_from_dict, action_
 
 from .bots import START_WAIT_S, BotFactory, BotPool
 from .store import Store
+from .trades import TradeLog
 
 log = logging.getLogger("engine.runner")
 
@@ -63,6 +64,7 @@ class LobbyRunner:
         self.history: dict[str, list[list[float]]] = {g: [] for g in self.goods}
         self.marks: dict[str, float] = {}
         self.leaderboard: list[dict] = []
+        self.trades = TradeLog()  # groups' fills, shown to viewers
         self.viewers: set[WebSocket] = set()
         self.bots = BotPool(self, store, bot_factory)
         self.on_finished: Callable[[LobbyRunner], Awaitable[None]] | None = None
@@ -99,11 +101,13 @@ class LobbyRunner:
 
     def _replay_step(self, batches: dict[str, list[Action]], record: bool) -> None:
         t = self.sim.tick
-        self.sim.open_tick()
+        open_log = self.sim.open_tick()
+        mids = self._mids()
         self._update_marks()
         if record:
             self._record_history(t)
-        self.sim.close_tick(batches)
+        close_log = self.sim.close_tick(batches)
+        self.trades.add_fills(t, open_log.fills + close_log.fills, mids, self.groups)
 
     # Lifecycle ----------------------------------------------------------------------------
 
@@ -189,6 +193,7 @@ class LobbyRunner:
     async def _tick(self, loop: asyncio.AbstractEventLoop, opened_at: float, tick_s: float) -> None:
         t = self.sim.tick
         open_log = self.sim.open_tick()
+        mids = self._mids()
         self._update_marks()
         self._record_history(t)
         self._pending, self._pending_rejects = dict(self._carry), {}
@@ -209,6 +214,9 @@ class LobbyRunner:
         self._update_marks()
         self._update_leaderboard()
         self._queue_close(t, batches, open_log, close_log)
+        trades = self.trades.add_fills(t, open_log.fills + close_log.fills, mids, self.groups)
+        if trades:
+            await self._broadcast({"type": "trades", "tick": t, "trades": trades})
         await self.bots.after_close(t, open_log, close_log)
 
     async def _finish(self) -> None:
@@ -319,6 +327,7 @@ class LobbyRunner:
             if self.tick is not None
             else {},
             "leaderboard": self.leaderboard,
+            **self.trades.snapshot(),
         }
 
     async def add_viewer(self, ws: WebSocket) -> None:
@@ -332,6 +341,9 @@ class LobbyRunner:
             mid = book.mid()
             if mid is not None:
                 self.marks[good] = mid
+
+    def _mids(self) -> dict[str, float | None]:
+        return {g: book.mid() for g, book in self.sim.driver.exchange.books.items()}
 
     def _record_history(self, t: int) -> None:
         for good in self.goods:
@@ -361,13 +373,12 @@ class LobbyRunner:
 
     def _tick_message(self, t: int) -> dict:
         state = self.sim.driver.public_state()
-        books = self.sim.driver.exchange.books
         msg = {
             "type": "tick",
             "tick": t,
             "books": state["order_depths"],
             "trades": state["market_trades"],
-            "mids": {g: books[g].mid() for g in self.goods},
+            "mids": self._mids(),
         }
         if t % LEADERBOARD_EVERY == 0:
             msg["leaderboard"] = self.leaderboard
