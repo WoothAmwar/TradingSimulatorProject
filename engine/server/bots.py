@@ -88,6 +88,7 @@ class GroupBot:
     message: str | None = None
     generation: int = 0  # bumped whenever the bot is replaced, so stale tasks can tell
     crashes: int = 0  # in a row; reset once a bot answers a tick
+    history_sent: int = 0  # how many of the market's past prices the current bot has been sent
     restart_at: float | None = None
     answered: int = 0
     missed: int = 0
@@ -254,6 +255,7 @@ class BotPool:
         """Stops the group's bot, if any; its resting orders shouldn't outlive it."""
         gb.generation += 1
         gb.restart_at = None
+        gb.history_sent = 0  # the next bot starts with an empty history
         if gb.bot is not None:
             gb.bot.close()
             gb.bot = None
@@ -286,7 +288,9 @@ class BotPool:
             if bot.busy:
                 self._missed(gb, t, "bot is still working on an earlier tick")
                 continue
-            self._spawn(self._tick(gid, gb, bot, t, bot_state(driver, gid)))
+            state = bot_state(driver, gid)
+            gb.history_sent = self.runner.prices.add_to(state, gb.history_sent)
+            self._spawn(self._tick(gid, gb, bot, t, state))
 
     async def _tick(self, gid: str, gb: GroupBot, bot: Bot, t: int, state: dict) -> None:
         started = time.perf_counter()

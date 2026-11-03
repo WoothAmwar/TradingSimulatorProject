@@ -7,6 +7,7 @@ import { FlatMeanDemo } from "@/components/about/flat-mean-demo";
 import { MockSession } from "@/components/about/mock-session";
 import { PricePaths } from "@/components/about/price-paths";
 import { TickTimeline } from "@/components/about/tick-timeline";
+import { PY_HELPER } from "@/lib/templates";
 
 export const metadata: Metadata = {
   title: "How it works · ACM Trading Simulator",
@@ -159,6 +160,10 @@ export default function AboutPage() {
         <StateReference />
         <p className="max-w-3xl text-sm text-muted">
           In best-time rounds there is also <code>state.prices</code>: every tick&apos;s price, past and future.
+        </p>
+        <p className="max-w-3xl text-sm text-muted">
+          Helper: <code>{PY_HELPER.call}</code>. {PY_HELPER.meaning} Import it with{" "}
+          <code>from trader_sdk import price_stats</code>.
         </p>
       </Section>
 

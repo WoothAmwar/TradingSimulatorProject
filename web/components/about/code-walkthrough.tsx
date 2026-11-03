@@ -17,14 +17,19 @@ const NOTES: { anchor: string; note: string }[] = [
     note: "Called every tick, in every round. It gets the market as it is now and returns orders.",
   },
   { anchor: "if not state.bids or not state.asks:", note: "If nobody is offering to buy, or to sell, do nothing." },
-  { anchor: "best_bid = state.bids[0][0]", note: "The highest price anyone will pay. [0] is the best offer; [0][0] is its price." },
-  { anchor: "best_ask = state.asks[0][0]", note: "The lowest price anyone will sell for." },
-  { anchor: "if best_ask - best_bid <= 2:", note: "With a gap of 2 or less there's no room for better offers in between." },
+  {
+    anchor: "if state.best_ask - state.best_bid <= 2:",
+    note: "best_bid is the highest price anyone will pay; best_ask, the lowest anyone will sell for. With a gap of 2 or less there's no room for better offers in between.",
+  },
   { anchor: "orders = []", note: "Collect this tick's orders." },
-  { anchor: "room_to_buy = state.limit - state.position", note: "How many more units you're allowed to own." },
-  { anchor: "room_to_sell = state.limit + state.position", note: "How many you may sell (you can owe up to the limit)." },
-  { anchor: "if room_to_buy > 0:", note: "Offer to buy at 1 above the best bid, so sellers come to you first." },
-  { anchor: "if room_to_sell > 0:", note: "Offer to sell at 1 below the best ask, so buyers come to you first." },
+  {
+    anchor: "if state.can_buy > 0:",
+    note: "can_buy: how many more units you may buy. Offer to buy at 1 above the best bid, so sellers come to you first.",
+  },
+  {
+    anchor: "if state.can_sell > 0:",
+    note: "can_sell: how many you may sell (you can owe up to the limit). Offer to sell at 1 below the best ask, so buyers come to you first.",
+  },
   {
     anchor: "return orders",
     note: "These replace last tick's orders. Next tick, run() is called again with the new market.",

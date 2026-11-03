@@ -17,6 +17,9 @@ static char *cursor;
 /* "Best time" rounds send every tick's price once, on the first tick; bots see it every tick. */
 static int price_cache[MAX_PRICES];
 static int price_count;
+/* Every earlier tick's price. Each state sends only the ones this bot hasn't had yet. */
+static double *history;
+static int history_count, history_cap;
 
 static int is_space(char c) { return c == ' ' || c == '\n' || c == '\t' || c == '\r'; }
 
@@ -39,7 +42,28 @@ static long long next_int(void) {
     return t ? strtoll(t, NULL, 10) : 0;
 }
 
+static double next_double(void) {
+    char *t = next_token();
+    return t ? strtod(t, NULL) : 0;
+}
+
 static int bounded(long long n, int max) { return n < 0 ? 0 : (n > max ? max : (int)n); }
+
+/* Reads "H start n p1 p2 ...": the history from index start on. */
+static void parse_history(void) {
+    next_token(); /* H */
+    long long start = next_int(), n = next_int();
+    if (start < 0 || start > history_count) start = history_count;
+    if (n < 0) n = 0;
+    if (start + n > history_cap) {
+        int cap = (int)(start + n) * 2;
+        double *grown = realloc(history, (size_t)cap * sizeof *history);
+        if (!grown) n = history_cap - start;
+        else history = grown, history_cap = cap;
+    }
+    for (long long k = 0; k < n; k++) history[start + k] = next_double();
+    history_count = (int)(start + n);
+}
 
 /* Reads "<tag> n price qty price qty ..." into levels; returns how many were kept. */
 static int parse_pairs(Level *levels, int max) {
@@ -71,8 +95,20 @@ static void parse_state(void) {
             if (k < MAX_PRICES) price_cache[k] = price;
         }
     }
+    if (next_is('H')) parse_history();
+    int lowest = -state.limit; /* the fewest units you may hold */
+    if (next_is('M')) {
+        next_token(); /* M */
+        lowest = (int)next_int();
+    }
     state.prices = price_cache;
     state.num_prices = price_count;
+    state.history = history;
+    state.num_history = history_count;
+    state.best_bid = state.num_bids ? state.bids[0].price : 0;
+    state.best_ask = state.num_asks ? state.asks[0].price : 0;
+    state.can_buy = state.limit > state.position ? state.limit - state.position : 0;
+    state.can_sell = state.position > lowest ? state.position - lowest : 0;
     if (state.num_bids && state.num_asks) {
         state.price = (state.bids[0].price + state.asks[0].price) / 2.0;
     } else if (state.num_bids) {
@@ -88,6 +124,21 @@ static void push(Orders *out, int price, int qty) {
 
 void buy(Orders *out, int price, int qty) { push(out, price, qty < 0 ? -qty : qty); }
 void sell(Orders *out, int price, int qty) { push(out, price, qty < 0 ? qty : -qty); }
+
+PriceStats price_stats(const double *prices, int n, int last) {
+    PriceStats st = {0, 0};
+    if (last > 0 && last < n) {
+        prices += n - last;
+        n = last;
+    }
+    if (n <= 0) return st;
+    double sum = 0, squares = 0;
+    for (int i = 0; i < n; i++) sum += prices[i];
+    st.average = sum / n;
+    for (int i = 0; i < n; i++) squares += (prices[i] - st.average) * (prices[i] - st.average);
+    st.stdev = __builtin_sqrt(squares / n);
+    return st;
+}
 
 EXPORT("bot_input") char *bot_input(void) { return in_buf; }
 EXPORT("bot_input_capacity") int bot_input_capacity(void) { return IN_CAP - 1; }

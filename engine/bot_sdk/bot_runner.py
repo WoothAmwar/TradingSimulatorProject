@@ -70,9 +70,16 @@ class Bot:
         if not hasattr(mod, "Trader"):
             raise RuntimeError("your code must define a class named Trader")
         self.trader = mod.Trader()
+        self.history = []  # every earlier tick's price
 
     def tick(self, state):
-        return to_response(self.trader.run(trader_sdk.TradingState(state)), state["goods"][0])
+        good = state["goods"][0]
+        new = state.get("history")
+        if new is not None:  # the prices since the last state, from index history_start on
+            del self.history[state.get("history_start", 0) :]
+            self.history.extend(new.get(good, ()))
+        ts = trader_sdk.TradingState(state, self.history)
+        return to_response(self.trader.run(ts), good)
 
     def tick_json(self, state_json):
         return json.dumps(self.tick(json.loads(state_json)))

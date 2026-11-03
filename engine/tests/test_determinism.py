@@ -9,7 +9,7 @@ import pytest
 from market_core.backtest import Backtest
 from market_core.config import LobbyConfig, default_lobby_config
 from market_core.dataset import build_dataset, read_events
-from market_core.protocol import bot_state, parse_bot_response
+from market_core.protocol import PriceHistory, bot_state, parse_bot_response
 from market_core.simulator import MarketSimulator
 from market_core.types import action_to_dict
 
@@ -69,11 +69,18 @@ def test_backtest_matches_live_lobby(tmp_path, bot):
     assert [e["t"] for e in events] == list(range(k))
 
     live = MarketSimulator(CONFIG, SEED)
+    live_prices = PriceHistory(live.driver.rules.goods)
+    history = {g: [] for g in live.driver.rules.goods}
     bt = Backtest(manifest, events, owner="g1")
     participant_fills = 0
     for _ in range(k):
         live.open_tick()
         state = bt.open_next()
+        start = state.pop("history_start")
+        for good, new in state.pop("history").items():
+            history[good][start:] = new
+        assert history == live_prices.prices  # every earlier tick's price, as the engine sends
+        live_prices.record(live.driver.exchange.books)
         assert state == bot_state(live.driver, "g1")
         response = bot(state) if bot else None
         actions, _ = parse_bot_response("g1", response)

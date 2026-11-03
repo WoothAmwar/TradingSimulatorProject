@@ -20,6 +20,7 @@ import {
 } from "@/app/actions/admin";
 import type { LobbyAction } from "@/lib/engine";
 import { GOOD_PRESETS, STATIC_PRESETS, STATUS_STYLES, statusLabel, type PublicConfig } from "@/lib/lobby";
+import { languageLabel } from "@/lib/templates";
 
 export type AdminData = {
   viewerId: string;
@@ -39,7 +40,8 @@ export type AdminData = {
     current_tick: number | null;
     config: PublicConfig;
     seed: string | null;
-    groupIds: string[];
+    /** Entered groups, each with its active submission (live rounds). */
+    entries: { groupId: string; submission: { id: string; title: string; language: string } | null }[];
   }[];
   profiles: { id: string; display_name: string | null; email: string | null; is_admin: boolean }[];
   allowlist: string[];
@@ -290,21 +292,50 @@ function LobbiesAdmin({
                 {showSeed === l.id ? `seed ${l.seed}` : "show seed"}
               </button>
             </p>
+            {l.entries.length > 0 && (
+              <ul className="space-y-1 text-sm">
+                {groups.map((g) => {
+                  const entry = l.entries.find((e) => e.groupId === g.id);
+                  if (!entry) return null;
+                  const sub = entry.submission;
+                  return (
+                    <li key={g.id} className="flex min-w-0 items-center gap-3">
+                      <button
+                        disabled={pending || l.status === "finished"}
+                        className="badge shrink-0 border border-accent text-accent"
+                        title="Remove from this lobby"
+                        onClick={() => exec(() => setLobbyEntry(l.id, g.id, false))}
+                      >
+                        ✓ {g.name}
+                      </button>
+                      {sub ? (
+                        <span className="min-w-0 truncate">
+                          <a href={`/g/${g.slug}/s/${sub.id}`} className="hover:text-accent" title="Active submission">
+                            {sub.title}
+                          </a>
+                          <span className="text-muted"> · {languageLabel(sub.language)}</span>
+                        </span>
+                      ) : (
+                        <span className="text-muted">no submission chosen</span>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
             <div className="flex flex-wrap gap-2">
-              {groups.map((g) => {
-                const entered = l.groupIds.includes(g.id);
-                return (
+              {groups
+                .filter((g) => !l.entries.some((e) => e.groupId === g.id))
+                .map((g) => (
                   <button
                     key={g.id}
                     disabled={pending || l.status === "finished"}
-                    className={`badge border ${entered ? "border-accent text-accent" : "border-border text-muted"}`}
-                    onClick={() => exec(() => setLobbyEntry(l.id, g.id, !entered))}
+                    className="badge border border-border text-muted"
+                    onClick={() => exec(() => setLobbyEntry(l.id, g.id, true))}
                   >
-                    {entered ? "✓ " : "+ "}
-                    {g.name}
+                    + {g.name}
                   </button>
-                );
-              })}
+                ))}
             </div>
           </li>
         ))}

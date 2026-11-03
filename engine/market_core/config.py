@@ -103,7 +103,10 @@ class LobbyConfig:
 STABLE = GoodConfig(
     name="STABLE",
     model="ou",
-    model_params={"mu": 10_000.0, "kappa": 0.01, "sigma": 1.5},
+    # kappa 0.05: deviations from 10,000 halve in about 14 ticks and are typically ~5 (sigma /
+    # sqrt(2 kappa)). At 0.01 (~70 ticks, ~11) held units dominated scores and luck drowned out
+    # better strategies.
+    model_params={"mu": 10_000.0, "kappa": 0.05, "sigma": 1.5},
     position_limit=50,
 )
 

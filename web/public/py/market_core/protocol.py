@@ -7,7 +7,12 @@ State sent to a bot each tick::
      "market_trades": {"STABLE": [[10001, 3, 1], ...]},   # [price, qty, aggressor side]
      "position": {"STABLE": 4}, "cash": -40012, "fees_paid": 0,
      "open_orders": [{"id": 7, "good": "STABLE", "price": 9999, "qty": 5, ...}],
-     "own_trades": [{"good": "STABLE", "price": 10001, "qty": -3, "maker": true}]}
+     "own_trades": [{"good": "STABLE", "price": 10001, "qty": -3, "maker": true}],
+     "history_start": 9990, "history": {"STABLE": [10001, 10000.5, ...]}}
+
+``history`` is the market price at every earlier tick (the middle price as each tick opened, as in
+prices.csv). Each state carries only the prices the bot hasn't been sent yet, from index
+``history_start`` of the whole list on, so the bot's SDK keeps the list.
 
 Response from a bot (every key optional; quantities are signed, + buys and - sells)::
 
@@ -21,12 +26,15 @@ Participants' prices past the tick's price band (``ExchangeRules.price_band``) m
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping
 from typing import Any
 
+from .book import OrderBook
 from .driver import TickDriver
 from .types import BUY, SELL, Action, Cancel, CancelAll, NewOrder, Reject
 
 MAX_CANCELS = 200
+HISTORY_PER_STATE = 20_000  # a bot that starts late in a long round gets the rest over a few ticks
 
 
 def _text(value: Any) -> str:
@@ -42,6 +50,30 @@ def bot_state(driver: TickDriver, owner: str) -> dict:
     state["limits"] = dict(driver.rules.position_limits)
     state.update(driver.private_state(owner))
     return state
+
+
+class PriceHistory:
+    """The market price at every tick so far: each good's middle price as the tick opened (the
+    one side's best price, or the last price, while the book is one-sided or empty)."""
+
+    def __init__(self, goods: Iterable[str]) -> None:
+        self.prices: dict[str, list[float]] = {g: [] for g in goods}
+
+    def record(self, books: Mapping[str, OrderBook]) -> None:
+        for good, prices in self.prices.items():
+            book = books[good]
+            mid = book.mid()
+            if mid is None:
+                mid = book.best_bid() or book.best_ask() or (prices[-1] if prices else None)
+            if mid is not None:
+                prices.append(int(mid) if mid == int(mid) else mid)
+
+    def add_to(self, state: dict, sent: int) -> int:
+        """Adds the prices from index ``sent`` on to a bot's state; returns how many it has."""
+        end = sent + HISTORY_PER_STATE
+        state["history_start"] = sent
+        state["history"] = {g: p[sent:end] for g, p in self.prices.items()}
+        return max((sent + len(p) for p in state["history"].values()), default=sent)
 
 
 def parse_bot_response(owner: str, payload: Any) -> tuple[list[Action], list[Reject]]:

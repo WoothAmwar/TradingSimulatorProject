@@ -25,10 +25,16 @@ typedef struct {
     int num_bids, num_asks, num_trades;
     Level bids[MAX_LEVELS];   /* offers to buy, highest price first */
     Level asks[MAX_LEVELS];   /* offers to sell, lowest price first */
+    int best_bid;             /* highest offer to buy (0 if there is none) */
+    int best_ask;             /* lowest offer to sell (0 if there is none) */
     Trade trades[MAX_TRADES]; /* everyone's trades since the last tick */
     int position;             /* units you own (below 0: you owe units) */
     int limit;                /* the most units you may own, or owe */
+    int can_buy;              /* units you may still buy without passing the limit */
+    int can_sell;             /* units you may still sell without passing the limit */
     long long cash;           /* money from selling minus money spent buying */
+    const double *history;    /* the price at every earlier tick, oldest first */
+    int num_history;
     const int *prices;        /* "best time" rounds: every tick's price, past and future */
     int num_prices;
 } State;
@@ -45,6 +51,15 @@ typedef struct {
 
 void buy(Orders *out, int price, int qty);  /* buy qty units, paying at most price each */
 void sell(Orders *out, int price, int qty); /* sell qty units, getting at least price each */
+
+typedef struct {
+    double average;
+    double stdev; /* how far a price usually is from the average */
+} PriceStats;
+
+/* Average and stdev of the last `last` of n prices (last = 0: all of them); 0 and 0 if n is 0.
+ * Example: price_stats(s->history, s->num_history, 100). */
+PriceStats price_stats(const double *prices, int n, int last);
 
 /* Written by you. */
 void trader_init(void);

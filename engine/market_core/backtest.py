@@ -17,7 +17,7 @@ from collections.abc import Callable, Iterable
 
 from .driver import TickDriver
 from .exchange import ExchangeRules
-from .protocol import bot_state, parse_bot_response
+from .protocol import PriceHistory, bot_state, parse_bot_response
 from .series import SeriesBacktest
 from .types import action_from_dict
 
@@ -32,6 +32,8 @@ class Backtest:
         self._post: list = []
         self._marks: dict[str, float] = {}
         self._final_marks: dict[str, float] = dict(manifest.get("marks", {}))
+        self._history = PriceHistory(self.goods)
+        self._history_sent = 0
 
     def open_next(self) -> dict | None:
         event = next(self._events, None)
@@ -39,7 +41,10 @@ class Backtest:
             return None
         self.driver.open_tick(event["t"], [action_from_dict(a) for a in event["pre"]])
         self._post = [action_from_dict(a) for a in event["post"]]
-        return bot_state(self.driver, self.owner)
+        state = bot_state(self.driver, self.owner)
+        self._history_sent = self._history.add_to(state, self._history_sent)
+        self._history.record(self.driver.exchange.books)  # history is every earlier tick's price
+        return state
 
     def close(self, response: object) -> dict:
         actions, rejects = parse_bot_response(self.owner, response)

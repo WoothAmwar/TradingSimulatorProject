@@ -264,6 +264,125 @@ test("the engine runs every live template exactly as the browser does", { timeou
   }
 });
 
+// The same bot in every language: prints the helpers' values now and then and trades on
+// price_stats() of the last 20 prices.
+const STATS_BOTS = {
+  python: `from trader_sdk import buy, sell, price_stats
+
+class Trader:
+    def run(self, s):
+        average, stdev = price_stats(s.history, last=20)
+        if s.tick % 10 == 0:
+            last = s.history[-1] if s.history else 0
+            print(f"{s.tick} {len(s.history)} {last:.1f} {average or 0:.6f} {stdev or 0:.6f} "
+                  f"{s.best_bid or 0} {s.best_ask or 0} {s.can_buy} {s.can_sell}")
+        if len(s.history) < 20:
+            return []
+        orders = []
+        if s.can_buy > 0:
+            orders.append(buy(int(average - stdev), min(3, s.can_buy)))
+        if s.can_sell > 0:
+            orders.append(sell(int(average + stdev) + 1, min(3, s.can_sell)))
+        return orders
+`,
+  c: `#include <stdio.h>
+#include "trader.h"
+
+void trader_init(void) {}
+
+void trader_run(const State *s, Orders *out) {
+    PriceStats st = price_stats(s->history, s->num_history, 20);
+    if (s->tick % 10 == 0) {
+        double last = s->num_history ? s->history[s->num_history - 1] : 0;
+        printf("%d %d %.1f %.6f %.6f %d %d %d %d\\n", s->tick, s->num_history, last, st.average,
+               st.stdev, s->best_bid, s->best_ask, s->can_buy, s->can_sell);
+    }
+    if (s->num_history < 20) return;
+    if (s->can_buy > 0) buy(out, (int)(st.average - st.stdev), s->can_buy < 3 ? s->can_buy : 3);
+    if (s->can_sell > 0) sell(out, (int)(st.average + st.stdev) + 1, s->can_sell < 3 ? s->can_sell : 3);
+}
+`,
+  cpp: `#include "trader.hpp"
+#include <algorithm>
+#include <cstdio>
+
+class Trader {
+public:
+    std::vector<Order> run(const State& s) {
+        PriceStats st = price_stats(s.history, 20);
+        if (s.tick % 10 == 0) {
+            char line[200];
+            std::snprintf(line, sizeof line, "%d %d %.1f %.6f %.6f %d %d %d %d", s.tick,
+                          (int)s.history.size(), s.history.empty() ? 0.0 : s.history.back(),
+                          st.average, st.stdev, s.best_bid, s.best_ask, s.can_buy, s.can_sell);
+            std::cout << line << "\\n";
+        }
+        if (s.history.size() < 20) return {};
+        std::vector<Order> orders;
+        if (s.can_buy > 0) orders.push_back(buy((int)(st.average - st.stdev), std::min(3, s.can_buy)));
+        if (s.can_sell > 0) orders.push_back(sell((int)(st.average + st.stdev) + 1, std::min(3, s.can_sell)));
+        return orders;
+    }
+};
+`,
+};
+
+test("history, price_stats and the state shortcuts agree in Python, C and C++", { timeout: 600_000 }, async (t) => {
+  // Under 250 ticks, so every printed line comes back with the final reply.
+  const run = async (init) => {
+    await init(host);
+    await host.call("init_backtest", { files: marketCore, manifest: dataset.manifest, events: dataset.events() });
+    const { result, logs } = await host.call("run_backtest", { maxTicks: 240 });
+    return { ...JSON.parse(result), logs };
+  };
+  const python = await run((h) => h.call("init_python_bot", { sdk: pySdk, source: STATS_BOTS.python }));
+  assert.deepEqual(python.errors, []);
+  assert.equal(python.logs.length, 24);
+  assert.ok(python.fills.length > 0, "the stats bot should trade");
+  assert.match(python.logs[0], /^0 0 0\.0 0\.000000 0\.000000 \d+ \d+ 50 50$/);
+  assert.match(python.logs[3], /^30 30 \d+\.\d \d+\.\d{6} \d+\.\d{6} /);
+
+  // Live states: the whole history first, then one new price a tick, as the engine sends them.
+  const prices = Array.from({ length: 30 }, (_, i) => 10_000 + ((i * 7) % 11) - 5 + (i % 2) / 2);
+  const states = LIVE_STATES.map((s, i) => ({
+    ...s,
+    history_start: i ? 24 + i : 0,
+    history: { STABLE: i ? [prices[24 + i]] : prices.slice(0, 25) },
+  }));
+  await host.call("init_python_bot", { sdk: pySdk, source: STATS_BOTS.python });
+  const expected = [];
+  for (const s of states) expected.push(JSON.parse((await host.call("tick", { state: JSON.stringify(s) })).result));
+  assert.ok(expected.some((r) => r.orders.length));
+  const onEngine = existsSync(join(ENGINE, "wasi-python/python.wasm"));
+  if (onEngine) {
+    writeFileSync(join(tmp, "stats.py"), STATS_BOTS.python);
+    assert.deepEqual(engineReplies("python", join(tmp, "stats.py"), states).map((r) => r.response), expected);
+  } else {
+    t.diagnostic("CPython for WASI isn't installed: skipping the engine's Python run");
+  }
+
+  const cc = compiler();
+  try {
+    for (const language of ["c", "cpp"]) {
+      const { result: wasm } = await cc.call("compile", { language, source: STATS_BOTS[language], sdk });
+      const compiled = await run((h) => h.call("init_wasm_bot", { wasm: wasm.slice() }));
+      assert.deepEqual(compiled.errors, [], language);
+      assert.deepEqual(compiled.logs, python.logs, language);
+      assert.deepEqual(compiled.series, python.series, language);
+
+      await host.call("init_wasm_bot", { wasm: wasm.slice() });
+      const replies = [];
+      for (const s of states) replies.push(JSON.parse((await host.call("tick", { state: JSON.stringify(s) })).result));
+      assert.deepEqual(replies, expected, `${language} in the browser`);
+      writeFileSync(join(tmp, `stats-${language}.wasm`), wasm);
+      const engine = engineReplies(language, join(tmp, `stats-${language}.wasm`), states);
+      assert.deepEqual(engine.map((r) => r.response), expected, `${language} on the engine`);
+    }
+  } finally {
+    await cc.terminate();
+  }
+});
+
 for (const language of ["c", "cpp"]) {
   test(`${language} template compiles in the browser toolchain and trades like the python template`, { timeout: 600_000 }, async () => {
     const cc = compiler();

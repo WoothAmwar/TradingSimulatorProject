@@ -106,6 +106,13 @@ function stateToText(s) {
   ];
   const prices = s.prices?.[good];
   if (prices) lines.push(`P ${prices.length} ${prices.join(" ")}`);
+  if (s.history) {
+    // The prices the bot hasn't been sent yet, from index history_start on.
+    const history = s.history[good] ?? [];
+    lines.push(`H ${s.history_start ?? 0} ${history.length} ${history.join(" ")}`);
+  }
+  const lowest = s.min_positions?.[good];
+  if (lowest !== undefined) lines.push(`M ${lowest}`);
   return lines.join("\n") + "\n";
 }
 

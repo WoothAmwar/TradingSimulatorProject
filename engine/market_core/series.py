@@ -38,17 +38,21 @@ class SeriesBacktest:
         self._path = {g: tuple(int(e["prices"][g]) for e in events) for g in self.goods}
         self._prices: dict[str, int] = {}
         self._last_fills: list[dict] = []
+        self._opened = 0  # ticks so far; history is every earlier tick's price
 
     def open_next(self) -> dict | None:
         event = next(self._events, None)
         if event is None:
             return None
+        start = max(self._opened - 1, 0)  # the last tick's price is the only new one
+        self._opened += 1
         self.tick = event["t"]
         self._prices = {g: int(event["prices"][g]) for g in self.goods}
         return {
             "tick": self.tick,
             "goods": list(self.goods),
             "limits": dict(self.max_positions),
+            "min_positions": dict(self.min_positions),  # e.g. 0: you may not owe units
             "order_depths": {
                 g: {"bids": [[p, self.max_positions[g]]], "asks": [[p, self.max_positions[g]]]}
                 for g, p in self._prices.items()
@@ -60,6 +64,8 @@ class SeriesBacktest:
             "open_orders": [],
             "own_trades": [{**f, "maker": False} for f in self._last_fills],
             "prices": self._path,
+            "history_start": start,
+            "history": {g: p[start : self._opened - 1] for g, p in self._path.items()},
         }
 
     def close(self, response: object) -> dict:

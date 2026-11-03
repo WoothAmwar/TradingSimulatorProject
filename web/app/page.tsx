@@ -145,7 +145,8 @@ async function AdminSection() {
         .select("id, name, status, max_groups, public_config, current_tick, kind")
         .order("created_at", { ascending: false }),
       supabase.from("lobby_secrets").select("lobby_id, seed::text"),
-      supabase.from("lobby_entries").select("lobby_id, group_id, active_submission_id"),
+      // Submission titles are only readable by admins and the group's own members (RLS).
+      supabase.from("lobby_entries").select("lobby_id, group_id, submissions(id, title, language)"),
       supabase.from("profiles").select("id, display_name, email, is_admin").order("created_at"),
       supabase.from("admin_allowlist").select("email").order("email"),
     ]);
@@ -167,7 +168,9 @@ async function AdminSection() {
       ...l,
       config: publicConfig(l.public_config),
       seed: (secrets.data?.find((s) => s.lobby_id === l.id)?.seed as string | undefined) ?? null,
-      groupIds: (entries.data ?? []).filter((e) => e.lobby_id === l.id).map((e) => e.group_id),
+      entries: (entries.data ?? [])
+        .filter((e) => e.lobby_id === l.id)
+        .map((e) => ({ groupId: e.group_id, submission: e.submissions })),
     })),
     profiles: profiles.data ?? [],
     allowlist: (allowlist.data ?? []).map((a) => a.email),

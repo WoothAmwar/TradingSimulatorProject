@@ -20,12 +20,23 @@ export const PY_STATE_FIELDS: { name: string; type: string; meaning: string }[] 
   { name: "state.price", type: "float", meaning: "Current price: halfway between the best bid and ask." },
   { name: "state.bids", type: "list of (price, qty)", meaning: "Other traders' offers to buy, highest price first." },
   { name: "state.asks", type: "list of (price, qty)", meaning: "Other traders' offers to sell, lowest price first." },
+  { name: "state.best_bid", type: "int or None", meaning: "The highest offer to buy (None if there is none)." },
+  { name: "state.best_ask", type: "int or None", meaning: "The lowest offer to sell (None if there is none)." },
   { name: "state.position", type: "int", meaning: "Units you own (below 0: you owe units)." },
   { name: "state.limit", type: "int", meaning: "The most units you may own, or owe." },
+  { name: "state.can_buy", type: "int", meaning: "Units you may still buy without passing the limit." },
+  { name: "state.can_sell", type: "int", meaning: "Units you may still sell without passing the limit." },
   { name: "state.cash", type: "int", meaning: "Money from selling minus money spent buying." },
   { name: "state.trades", type: "list of (price, qty)", meaning: "Everyone's trades since the last tick." },
   { name: "state.my_trades", type: "list of (price, qty)", meaning: "Your trades since the last tick (qty < 0: sold)." },
+  { name: "state.history", type: "tuple of float", meaning: "Every earlier tick's price, oldest first. Live rounds start with prices.csv." },
 ];
+
+/** The SDK's helper, documented in the templates and on /about. */
+export const PY_HELPER = {
+  call: "average, stdev = price_stats(state.history, last=100)",
+  meaning: "Average of the last 100 prices (leave out last for all) and how far a price usually is from it.",
+};
 
 export const PY_PRICES_FIELD = {
   name: "state.prices",
@@ -39,6 +50,10 @@ const pyRow = (f: { name: string; type: string; meaning: string }) =>
 const PY_STATE = `STATE: what run(state) gets every tick
 ${PY_STATE_FIELDS.map(pyRow).join("\n")}`;
 
+const PY_HELPERS = `HELPER: from trader_sdk import price_stats
+    ${PY_HELPER.call}
+    ${PY_HELPER.meaning}`;
+
 const PY_RETURN = `RETURN: a list of orders such as [buy(99, 5), sell(103, 5)], or [] for none.
     They replace last tick's orders; one sent again unchanged keeps its place in line.
     Orders that could take you past the limit are rejected.`;
@@ -48,10 +63,18 @@ const CPP_STATE = `// STATE: what run(s) gets every tick
 //   s.price      double          current price: halfway between the best bid and ask
 //   s.bids       vector<Level>   other traders' offers to buy {price, qty}, highest price first
 //   s.asks       vector<Level>   other traders' offers to sell {price, qty}, lowest price first
+//   s.best_bid   int             the highest offer to buy (0 if there is none)
+//   s.best_ask   int             the lowest offer to sell (0 if there is none)
 //   s.position   int             units you own (below 0: you owe units)
 //   s.limit      int             the most units you may own, or owe
+//   s.can_buy    int             units you may still buy without passing the limit
+//   s.can_sell   int             units you may still sell without passing the limit
 //   s.cash       long long       money from selling minus money spent buying
-//   s.trades     vector<Trade>   everyone's trades {price, qty} since the last tick`;
+//   s.trades     vector<Trade>   everyone's trades {price, qty} since the last tick
+//   s.history    vector<double>  every earlier tick's price, oldest first; live rounds start with prices.csv`;
+
+const CPP_HELPERS = `// HELPER: PriceStats st = price_stats(s.history, 100);  // the last 100 prices (leave out 100: all)
+//   st.average, and st.stdev: how far a price usually is from the average`;
 
 const CPP_RETURN = `// RETURN: a vector of orders such as {buy(99, 5), sell(103, 5)}, or {} for none.
 //   They replace last tick's orders; one sent again unchanged keeps its place in line.
@@ -62,10 +85,18 @@ const C_STATE = `/* STATE: what trader_run(s, out) gets every tick
  *   s->price        double     current price: halfway between the best bid and ask
  *   s->bids[i]      Level      others' offers to buy {price, qty}, highest first (i < s->num_bids)
  *   s->asks[i]      Level      others' offers to sell {price, qty}, lowest first (i < s->num_asks)
+ *   s->best_bid     int        the highest offer to buy (0 if there is none)
+ *   s->best_ask     int        the lowest offer to sell (0 if there is none)
  *   s->position     int        units you own (below 0: you owe units)
  *   s->limit        int        the most units you may own, or owe
+ *   s->can_buy      int        units you may still buy without passing the limit
+ *   s->can_sell     int        units you may still sell without passing the limit
  *   s->cash         long long  money from selling minus money spent buying
- *   s->trades[i]    Trade      everyone's recent trades {price, qty} (i < s->num_trades) */`;
+ *   s->trades[i]    Trade      everyone's recent trades {price, qty} (i < s->num_trades)
+ *   s->history[i]   double     every earlier tick's price, oldest first (i < s->num_history) */`;
+
+const C_HELPERS = `/* HELPER: PriceStats st = price_stats(s->history, s->num_history, 100);  (100: the last 100; 0: all)
+ *   st.average, and st.stdev: how far a price usually is from the average */`;
 
 const C_RETURN = `/* RETURN: call buy(out, price, qty) or sell(out, price, qty) for each order, or neither.
  *   They replace last tick's orders; one sent again unchanged keeps its place in line.
@@ -79,6 +110,8 @@ so other traders deal with it first.
 
 ${PY_STATE}
 
+${PY_HELPERS}
+
 ${PY_RETURN}
 """
 from trader_sdk import buy, sell
@@ -91,17 +124,13 @@ class Trader:
         """Called every tick. Return the orders you want, or [] to do nothing."""
         if not state.bids or not state.asks:
             return []
-        best_bid = state.bids[0][0]  # highest price someone will pay
-        best_ask = state.asks[0][0]  # lowest price someone will sell for
-        if best_ask - best_bid <= 2:  # no room to squeeze in between
+        if state.best_ask - state.best_bid <= 2:  # no room to squeeze in between
             return []
         orders = []
-        room_to_buy = state.limit - state.position
-        room_to_sell = state.limit + state.position
-        if room_to_buy > 0:
-            orders.append(buy(best_bid + 1, min(SIZE, room_to_buy)))
-        if room_to_sell > 0:
-            orders.append(sell(best_ask - 1, min(SIZE, room_to_sell)))
+        if state.can_buy > 0:
+            orders.append(buy(state.best_bid + 1, min(SIZE, state.can_buy)))
+        if state.can_sell > 0:
+            orders.append(sell(state.best_ask - 1, min(SIZE, state.can_sell)))
         return orders
 `,
   cpp: `#include "trader.hpp"
@@ -112,6 +141,8 @@ class Trader:
 //
 ${CPP_STATE}
 //
+${CPP_HELPERS}
+//
 ${CPP_RETURN}
 
 const int SIZE = 5;  // units per order
@@ -121,14 +152,10 @@ public:
     // Called every tick. Return the orders you want, or {} to do nothing.
     std::vector<Order> run(const State& s) {
         if (s.bids.empty() || s.asks.empty()) return {};
-        int best_bid = s.bids[0].price;  // highest price someone will pay
-        int best_ask = s.asks[0].price;  // lowest price someone will sell for
-        if (best_ask - best_bid <= 2) return {};  // no room to squeeze in between
+        if (s.best_ask - s.best_bid <= 2) return {};  // no room to squeeze in between
         std::vector<Order> orders;
-        int room_to_buy = s.limit - s.position;
-        int room_to_sell = s.limit + s.position;
-        if (room_to_buy > 0) orders.push_back(buy(best_bid + 1, std::min(SIZE, room_to_buy)));
-        if (room_to_sell > 0) orders.push_back(sell(best_ask - 1, std::min(SIZE, room_to_sell)));
+        if (s.can_buy > 0) orders.push_back(buy(s.best_bid + 1, std::min(SIZE, s.can_buy)));
+        if (s.can_sell > 0) orders.push_back(sell(s.best_ask - 1, std::min(SIZE, s.can_sell)));
         return orders;
     }
 };
@@ -139,6 +166,8 @@ public:
  * so other traders deal with it first. */
 
 ${C_STATE}
+
+${C_HELPERS}
 
 ${C_RETURN}
 
@@ -152,13 +181,9 @@ void trader_init(void) {}
 /* Called every tick. Add the orders you want, or none to do nothing. */
 void trader_run(const State *s, Orders *out) {
     if (s->num_bids == 0 || s->num_asks == 0) return;
-    int best_bid = s->bids[0].price; /* highest price someone will pay */
-    int best_ask = s->asks[0].price; /* lowest price someone will sell for */
-    if (best_ask - best_bid <= 2) return; /* no room to squeeze in between */
-    int room_to_buy = s->limit - s->position;
-    int room_to_sell = s->limit + s->position;
-    if (room_to_buy > 0) buy(out, best_bid + 1, min_int(SIZE, room_to_buy));
-    if (room_to_sell > 0) sell(out, best_ask - 1, min_int(SIZE, room_to_sell));
+    if (s->best_ask - s->best_bid <= 2) return; /* no room to squeeze in between */
+    if (s->can_buy > 0) buy(out, s->best_bid + 1, min_int(SIZE, s->can_buy));
+    if (s->can_sell > 0) sell(out, s->best_ask - 1, min_int(SIZE, s->can_sell));
 }
 `,
 };
@@ -279,12 +304,10 @@ class Trader:
         average = int(self.total / self.count + 0.5)  # estimate of the fixed average price
         lean = int(state.position / 10)  # own a lot? offer lower so you sell more
         orders = []
-        room_to_buy = state.limit - state.position
-        room_to_sell = state.limit + state.position
-        if room_to_buy > 0:
-            orders.append(buy(average - EDGE - lean, min(SIZE, room_to_buy)))
-        if room_to_sell > 0:
-            orders.append(sell(average + EDGE - lean, min(SIZE, room_to_sell)))
+        if state.can_buy > 0:
+            orders.append(buy(average - EDGE - lean, min(SIZE, state.can_buy)))
+        if state.can_sell > 0:
+            orders.append(sell(average + EDGE - lean, min(SIZE, state.can_sell)))
         return orders
 `,
     cpp: `#include "trader.hpp"
@@ -312,14 +335,8 @@ public:
         int average = (int)(total / count + 0.5);  // estimate of the fixed average price
         int lean = s.position / 10;  // own a lot? offer lower so you sell more
         std::vector<Order> orders;
-        int room_to_buy = s.limit - s.position;
-        int room_to_sell = s.limit + s.position;
-        if (room_to_buy > 0) {
-            orders.push_back(buy(average - EDGE - lean, std::min(SIZE, room_to_buy)));
-        }
-        if (room_to_sell > 0) {
-            orders.push_back(sell(average + EDGE - lean, std::min(SIZE, room_to_sell)));
-        }
+        if (s.can_buy > 0) orders.push_back(buy(average - EDGE - lean, std::min(SIZE, s.can_buy)));
+        if (s.can_sell > 0) orders.push_back(sell(average + EDGE - lean, std::min(SIZE, s.can_sell)));
         return orders;
     }
 };
@@ -349,10 +366,8 @@ void trader_run(const State *s, Orders *out) {
     if (count == 0) return;
     int average = (int)(total / count + 0.5); /* estimate of the fixed average price */
     int lean = s->position / 10; /* own a lot? offer lower so you sell more */
-    int room_to_buy = s->limit - s->position;
-    int room_to_sell = s->limit + s->position;
-    if (room_to_buy > 0) buy(out, average - EDGE - lean, min_int(SIZE, room_to_buy));
-    if (room_to_sell > 0) sell(out, average + EDGE - lean, min_int(SIZE, room_to_sell));
+    if (s->can_buy > 0) buy(out, average - EDGE - lean, min_int(SIZE, s->can_buy));
+    if (s->can_sell > 0) sell(out, average + EDGE - lean, min_int(SIZE, s->can_sell));
 }
 `,
   },

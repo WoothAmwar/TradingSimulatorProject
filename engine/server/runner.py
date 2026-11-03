@@ -20,7 +20,7 @@ from fastapi import WebSocket
 
 from market_core.config import LobbyConfig
 from market_core.exchange import TickLog
-from market_core.protocol import parse_bot_response
+from market_core.protocol import PriceHistory, parse_bot_response
 from market_core.simulator import MarketSimulator
 from market_core.types import Action, CancelAll, Fill, action_from_dict, action_to_dict, is_bot
 
@@ -62,6 +62,7 @@ class LobbyRunner:
         self.end_tick = config.dataset_ticks + config.live_ticks
         self.goods = [g.name for g in config.goods]
         self.history: dict[str, list[list[float]]] = {g: [] for g in self.goods}
+        self.prices = PriceHistory(self.goods)  # every tick's price, for bots' state.history
         self.marks: dict[str, float] = {}
         self.leaderboard: list[dict] = []
         self.trades = TradeLog()  # groups' fills, shown to viewers
@@ -104,6 +105,7 @@ class LobbyRunner:
         open_log = self.sim.open_tick()
         mids = self._mids()
         self._update_marks()
+        self.prices.record(self.sim.driver.exchange.books)
         if record:
             self._record_history(t)
         close_log = self.sim.close_tick(batches)
@@ -204,6 +206,7 @@ class LobbyRunner:
         self._queue_market_snapshot(t, open_log)
         await self._broadcast(self._tick_message(t))
         self.bots.send_states(t)
+        self.prices.record(self.sim.driver.exchange.books)  # after: bots get earlier ticks' prices
 
         wait = close_at - loop.time()
         if wait > 0:

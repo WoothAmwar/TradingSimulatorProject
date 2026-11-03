@@ -16,6 +16,8 @@ std::string out_buf;
 Trader* trader = nullptr;
 // "Best time" rounds send every tick's price once, on the first tick; bots see it every tick.
 std::vector<int> price_cache;
+// Every earlier tick's price. Each state sends only the ones this bot hasn't had yet.
+std::vector<double> history_cache;
 
 // Reads "<tag> n price qty price qty ..." into items.
 template <typename T>
@@ -41,8 +43,24 @@ State parse_state(const char* text) {
         in >> tag >> n;
         price_cache.resize(n > 0 ? n : 0);
         for (auto& p : price_cache) in >> p;
+        in >> std::ws;
     }
+    if (in.peek() == 'H') {  // "H start n p1 p2 ...": the history from index start on
+        long long start = 0, n = 0;
+        in >> tag >> start >> n;
+        if (start < 0 || start > (long long)history_cache.size()) start = history_cache.size();
+        history_cache.resize(start + (n > 0 ? n : 0));
+        for (auto k = start; k < (long long)history_cache.size(); k++) in >> history_cache[k];
+        in >> std::ws;
+    }
+    int lowest = -s.limit;  // the fewest units you may hold
+    if (in.peek() == 'M') in >> tag >> lowest;
     s.prices = price_cache;
+    s.history = history_cache;
+    s.best_bid = s.bids.empty() ? 0 : s.bids[0].price;
+    s.best_ask = s.asks.empty() ? 0 : s.asks[0].price;
+    s.can_buy = s.limit > s.position ? s.limit - s.position : 0;
+    s.can_sell = s.position > lowest ? s.position - lowest : 0;
     if (!s.bids.empty() && !s.asks.empty()) {
         s.price = (s.bids[0].price + s.asks[0].price) / 2.0;
     } else if (!s.bids.empty()) {

@@ -518,6 +518,12 @@ def state_to_text(s: dict) -> str:
     prices = (s.get("prices") or {}).get(good)
     if prices is not None:
         lines.append(f"P {len(prices)} {' '.join(map(str, prices))}")
+    if "history" in s:  # the prices the bot hasn't been sent yet, from index history_start on
+        new = s["history"].get(good, [])
+        lines.append(f"H {s.get('history_start', 0)} {len(new)} {' '.join(map(str, new))}")
+    lowest = (s.get("min_positions") or {}).get(good)
+    if lowest is not None:
+        lines.append(f"M {lowest}")
     return "\n".join(lines) + "\n"
 
 
