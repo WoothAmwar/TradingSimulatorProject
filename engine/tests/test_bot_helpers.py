@@ -191,3 +191,24 @@ class Trader:
         bot.close()
 
     run(scenario())
+
+
+@needs_python
+def test_sandboxed_python_bot_gets_a_history_bigger_than_its_pipe():
+    """The first live state carries all of prices.csv: more than a pipe holds (64 KB on Linux)."""
+    source = """
+class Trader:
+    def run(self, state):
+        print(len(state.history), state.history[-1])
+        return []
+"""
+    prices = [10_000 + i % 7 * 0.5 for i in range(30_000)]
+
+    async def scenario():
+        bot = PythonBot(shared(), source)
+        await bot.start()
+        reply = await bot.tick({**STATE, "history_start": 0, "history": {"STABLE": prices}})
+        assert reply.logs == [f"30000 {prices[-1]}"]
+        bot.close()
+
+    run(scenario())

@@ -54,6 +54,7 @@ MEMORY_LIMIT = 64 << 20  # bytes of linear memory per bot
 START_LIMIT_S = 60.0  # loading the code and building Trader(); slow on 0.1 CPU
 CALL_LIMIT_S = 10.0  # one run(state)
 EPOCH_S = 0.1  # watchdog resolution
+PIPE_WAIT_S = 0.005  # retry interval while a Python bot's stdin pipe is full
 MAX_REPLY_BYTES = 1 << 20  # one reply from a bot
 MAX_LOG_LINES = 200  # console lines kept from one call
 NATIVE_MODULE_CACHE = 32  # compiled C/C++ builds kept in memory
@@ -338,6 +339,7 @@ class PythonBot(SandboxedBot):
         reply = self._expect(CALL_LIMIT_S)
         try:
             view = memoryview(data)
+<<<<<<< Updated upstream
             while view:  # a pipe holds only 64 KB, so a long history goes in as the bot reads it
                 try:
                     view = view[os.write(self._stdin, view) :]
@@ -345,6 +347,13 @@ class PythonBot(SandboxedBot):
                     if reply.done():  # the bot died or was stopped
                         break
                     await asyncio.sleep(0.005)
+=======
+            while view and not reply.done():
+                try:
+                    view = view[os.write(self._stdin, view) :]
+                except BlockingIOError:  # a big state (the first has all of prices.csv) fills the
+                    await asyncio.sleep(PIPE_WAIT_S)  # pipe; wait for the bot to read some
+>>>>>>> Stashed changes
         except (OSError, TypeError) as exc:
             self._pending = None
             raise BotError("couldn't send the bot its state") from exc

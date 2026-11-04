@@ -111,7 +111,7 @@ export function LiveMarket({
               <div className="grid gap-3 md:grid-cols-[1fr_200px_170px]">
                 <PriceChart ref={(h) => { charts.current[good] = h; }} />
                 <OrderBook book={books[good]} />
-                <div className="max-h-[260px] overflow-hidden">
+                <div className="h-[260px] overflow-hidden">
                   <div className="px-1 pb-1 text-[10px] uppercase tracking-wide text-muted">Trades</div>
                   {(tape[good] ?? []).map((t, i) => (
                     <div key={i} className="num flex justify-between px-1 text-xs">
