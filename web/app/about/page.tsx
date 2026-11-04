@@ -130,9 +130,15 @@ export default function AboutPage() {
         <ul className="max-w-3xl list-disc space-y-1 pl-5 text-sm">
           <li>
             An offer stays on the market until someone takes it or your next answer replaces it. Sending the same
-            offer again keeps its place in line: at one price, the oldest offer trades first.
+            offer again keeps its place in line: at one price, the oldest offer trades first. If your bot doesn&apos;t
+            answer in time (it&apos;s still busy or too slow), its run() fails, or it crashes, its offers are cancelled.
           </li>
           <li>Your bot sees the market without its own offers.</li>
+          <li>
+            Your bot always reacts a step late: the price moves and the computer trader updates its offers before your
+            bot sees the market. An offer you leave at an old price can be taken at that price, so resting offers are
+            risky when the price is moving fast.
+          </li>
           <li>
             Computer traders take part too: one always offers to buy and sell, others trade at random, and one knows
             where the price is heading.

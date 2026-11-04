@@ -47,7 +47,7 @@ def _run_backtest(bt, py_bot, js_tick, max_ticks, every, progress):
             else:
                 response = json.loads(js_tick(json.dumps(state)) or "null")
         except Exception as exc:
-            response = None
+            response = {"cancel_all": True, "orders": []}  # like live: a tick that fails cancels
             if len(errors) < 20:
                 errors.append({"tick": state["tick"], "error": traceback.format_exc()[-3000:]})
         summary = bt.close(response)

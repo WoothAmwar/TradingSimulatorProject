@@ -338,8 +338,13 @@ class PythonBot(SandboxedBot):
         reply = self._expect(CALL_LIMIT_S)
         try:
             view = memoryview(data)
-            while view:  # the bot isn't busy, so the pipe has room
-                view = view[os.write(self._stdin, view) :]
+            while view:  # a pipe holds only 64 KB, so a long history goes in as the bot reads it
+                try:
+                    view = view[os.write(self._stdin, view) :]
+                except BlockingIOError:
+                    if reply.done():  # the bot died or was stopped
+                        break
+                    await asyncio.sleep(0.005)
         except (OSError, TypeError) as exc:
             self._pending = None
             raise BotError("couldn't send the bot its state") from exc

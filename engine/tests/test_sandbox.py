@@ -130,6 +130,23 @@ def test_python_bot_that_cannot_load(source, message):
 
 
 @needs_python
+def test_python_bot_gets_a_state_bigger_than_a_pipe():
+    async def scenario():
+        bot = await python_bot(
+            "class Trader:\n"
+            "    def run(self, s):\n"
+            "        print(len(s.history))\n"
+            "        return []\n"
+        )
+        history = {"history_start": 0, "history": {"STABLE": [10_000.5] * 30_000}}
+        reply = await bot.tick({**STATE, **history})
+        assert reply.error is None and reply.logs == ["30000"]
+        bot.close()
+
+    run(scenario())
+
+
+@needs_python
 def test_python_bot_sees_nothing_outside_its_sandbox():
     probe = """
 import os

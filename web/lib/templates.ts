@@ -56,7 +56,9 @@ const PY_HELPERS = `HELPER: from trader_sdk import price_stats
 
 const PY_RETURN = `RETURN: a list of orders such as [buy(99, 5), sell(103, 5)], or [] for none.
     They replace last tick's orders; one sent again unchanged keeps its place in line.
-    Orders that could take you past the limit are rejected.`;
+    Orders that could take you past the limit are rejected.
+    The market updates before your bot sees it, so an order left at an old price can be
+    traded against when the price moves.`;
 
 const CPP_STATE = `// STATE: what run(s) gets every tick
 //   s.tick       int             tick number: 0, 1, 2, ...
@@ -78,7 +80,9 @@ const CPP_HELPERS = `// HELPER: PriceStats st = price_stats(s.history, 100);  //
 
 const CPP_RETURN = `// RETURN: a vector of orders such as {buy(99, 5), sell(103, 5)}, or {} for none.
 //   They replace last tick's orders; one sent again unchanged keeps its place in line.
-//   Orders that could take you past the limit are rejected.`;
+//   Orders that could take you past the limit are rejected.
+//   The market updates before your bot sees it, so an order left at an old price can be
+//   traded against when the price moves.`;
 
 const C_STATE = `/* STATE: what trader_run(s, out) gets every tick
  *   s->tick         int        tick number: 0, 1, 2, ...
@@ -100,7 +104,9 @@ const C_HELPERS = `/* HELPER: PriceStats st = price_stats(s->history, s->num_his
 
 const C_RETURN = `/* RETURN: call buy(out, price, qty) or sell(out, price, qty) for each order, or neither.
  *   They replace last tick's orders; one sent again unchanged keeps its place in line.
- *   Orders that could take you past the limit are rejected. */`;
+ *   Orders that could take you past the limit are rejected.
+ *   The market updates before your bot sees it, so an order left at an old price can be
+ *   traded against when the price moves. */`;
 
 // The starter strategy in every language: offer to buy one above the best bid and to sell one below
 // the best ask, so other traders deal with this bot first. Sizes stay inside the limit.

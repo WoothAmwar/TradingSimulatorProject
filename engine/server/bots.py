@@ -33,6 +33,7 @@ log = logging.getLogger("engine.bots")
 SYNC_EVERY_S = 5.0  # how soon a newly picked submission takes over
 START_WAIT_S = 20.0  # the first tick waits this long for bots to start
 RESTART_DELAYS_S = (10, 30, 60, 120, 300)  # after the 1st, 2nd, ... crash in a row
+CANCELLED = "Your resting orders, if any, were cancelled."  # by the runner, at the tick's close
 CONSOLE_LINES = 300  # kept for monitors that connect later
 RECENT_FILLS = 40
 NATIVE = ("c", "cpp")
@@ -302,8 +303,8 @@ class BotPool:
         if gb.bot is not bot:
             return
         self._console(gb, reply.logs, "log")
-        if reply.error is not None:  # run() raised: no orders this tick, like in a backtest
-            self._console(gb, [f"tick {t}: {reply.error.rstrip()}"], "error")
+        if reply.error is not None:  # run() raised: no reply, so the runner cancels its orders
+            self._console(gb, [f"tick {t}: {reply.error.rstrip()}", CANCELLED], "error")
             return
         notice = self.runner.submit_response(gid, t, reply.response)
         if notice is not None:
@@ -328,7 +329,7 @@ class BotPool:
 
     def _missed(self, gb: GroupBot, t: int, reason: str) -> None:
         gb.missed += 1
-        self._console(gb, [f"tick {t}: skipped: {reason}"], "error")
+        self._console(gb, [f"tick {t}: skipped: {reason}", CANCELLED], "error")
 
     # Monitors -----------------------------------------------------------------------------
 
