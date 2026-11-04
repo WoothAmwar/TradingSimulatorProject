@@ -74,10 +74,11 @@ async function Market({ searchParams }: Pick<PageProps<"/">, "searchParams">) {
     lobbies.find((l) => l.status === "running" || l.status === "paused") ??
     lobbies.find((l) => l.status === "scheduled") ??
     lobbies[0];
+  const config = selected && publicConfig(selected.public_config);
 
   return (
     <div className="space-y-10">
-      {selected ? (
+      {selected && config ? (
         <section className="space-y-4">
           <div className="flex flex-wrap items-center gap-2">
             {lobbies.map((l) => (
@@ -96,7 +97,9 @@ async function Market({ searchParams }: Pick<PageProps<"/">, "searchParams">) {
             lobbyId={selected.id}
             lobbyName={selected.name}
             engineUrl={ENGINE_URL}
-            goods={publicConfig(selected.public_config).goods}
+            goods={config.goods}
+            startTick={config.dataset_ticks}
+            tickMs={config.tick_ms}
             scoreboard={scoreboard}
           />
         </section>

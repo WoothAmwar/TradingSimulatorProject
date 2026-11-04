@@ -649,6 +649,10 @@ export type Database = {
         }[]
       }
       join_group: { Args: { p_token: string }; Returns: string }
+      lobby_score_history: {
+        Args: { p_lobby: string; p_ticks: number }
+        Returns: { group_id: string; pnls: number[]; ticks: number[] }[]
+      }
       peek_invite: {
         Args: { p_token: string }
         Returns: { name: string; slug: string }[]
