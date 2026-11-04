@@ -7,7 +7,10 @@ const EXAMPLE = [
 ];
 
 const STEPS = [
-  { title: "1. The market updates", body: "The computer trader refreshes its offers." },
+  {
+    title: "1. The market updates",
+    body: "The computer trader moves its offers to the new price, trading with any of yours left at an old one.",
+  },
   { title: "2. run(state) is called", body: "Your bot sees the market and returns orders, or []." },
   { title: "3. Orders trade", body: "Offers that match trade, best price first." },
   { title: "4. Others arrive", body: "Other traders may trade with your offers." },

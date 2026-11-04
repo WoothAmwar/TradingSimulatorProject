@@ -135,6 +135,11 @@ export default function AboutPage() {
           </li>
           <li>Your bot sees the market without its own offers.</li>
           <li>
+            Your bot always reacts a step late: the price moves and the computer trader updates its offers before your
+            bot sees the market. An offer you leave at an old price can be taken at that price, so resting offers are
+            risky when the price is moving fast.
+          </li>
+          <li>
             Computer traders take part too: one always offers to buy and sell, others trade at random, and one knows
             where the price is heading.
           </li>
