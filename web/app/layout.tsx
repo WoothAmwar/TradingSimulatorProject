@@ -18,14 +18,17 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
     <html lang="en" className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}>
       <body className="flex min-h-full flex-col font-sans">
         <header className="border-b border-border bg-panel/60">
-          <div className="mx-auto flex h-14 max-w-7xl items-center justify-between px-4">
-            <Link href="/" className="flex items-center gap-2 font-semibold tracking-tight">
+          <div className="mx-auto flex min-h-14 max-w-7xl flex-wrap items-center justify-between gap-x-4 gap-y-2 px-4 py-2">
+            <Link href="/" className="flex items-center gap-2 whitespace-nowrap font-semibold tracking-tight">
               <span className="num rounded bg-accent px-1.5 text-sm text-black">ACM</span>
-              Trading Simulator
+              <span className="hidden sm:inline">Trading Simulator</span>
             </Link>
-            <div className="flex items-center gap-3">
+            <div className="flex flex-wrap items-center gap-3 whitespace-nowrap">
               <Link href="/about" className="text-sm text-muted hover:text-foreground">
                 How it works
+              </Link>
+              <Link href="/strategies" className="text-sm text-muted hover:text-foreground">
+                Strategies
               </Link>
               <Suspense fallback={<div className="h-8 w-24 animate-pulse rounded bg-panel-2" />}>
                 <UserMenu />
@@ -40,6 +43,9 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
             <div className="flex gap-4">
               <Link href="/about" className="hover:text-foreground">
                 How it works
+              </Link>
+              <Link href="/strategies" className="hover:text-foreground">
+                Strategies
               </Link>
               <Link href="/privacy" className="hover:text-foreground">
                 Privacy Policy

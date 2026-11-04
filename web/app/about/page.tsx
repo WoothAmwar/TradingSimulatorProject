@@ -187,7 +187,8 @@ export default function AboutPage() {
           </Card>
         </div>
         <p className="max-w-3xl text-sm text-muted">
-          Test every change with the backtest button. You can also download the market data from the editor.
+          Test every change with the backtest button. You can also download the market data from the editor. More
+          ideas, good and bad: <Link href="/strategies" className="text-accent hover:underline">Strategies</Link>.
         </p>
       </Section>
 
