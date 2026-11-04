@@ -213,6 +213,9 @@ class LobbyRunner:
             await asyncio.sleep(wait)
         self._accepting = None
         batches, self._pending = self._pending, {}
+        for gid in self.groups:  # no reply (busy, late, or run() raised): don't leave old orders resting
+            if gid not in batches and self.sim.driver.exchange.open_orders(gid):
+                batches[gid] = [CancelAll(gid)]
         close_log = self.sim.close_tick(batches)
         self._update_marks()
         self._update_leaderboard()

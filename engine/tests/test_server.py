@@ -77,7 +77,7 @@ class FakeBot:
             b.source == "crash" and b.ticks for b in FakeBot.made[:-1]
         ):
             raise BotError("took longer than 10 s and was stopped")  # only the first bot
-        if self.source == "raise":
+        if self.source == "raise" or (self.source == "flaky" and state["tick"] % 2):
             return Reply(None, [], "ZeroDivisionError: division by zero")
         strategy = STRATEGIES.get(self.source, quiet)
         return Reply(strategy(state), [f"{self.source} tick {state['tick']}"])
@@ -124,7 +124,7 @@ def quiet(state: dict) -> dict:
     return {"cancel_all": True, "orders": []}
 
 
-STRATEGIES = {"maker": maker, "taker": taker, "quiet": quiet}
+STRATEGIES = {"maker": maker, "taker": taker, "quiet": quiet, "flaky": maker}
 
 
 @contextmanager
@@ -254,6 +254,18 @@ def test_late_responses_are_refused():
         assert notice == "response arrived after the deadline"
         client.post(f"/admin/lobbies/{LOBBY}/stop", headers=ADMIN)
         assert store.lobbies[LOBBY].status == "finished"
+
+
+def test_orders_are_cancelled_when_a_bot_gives_no_reply():
+    store = make_store()
+    select(store, "g1", "s1", "flaky")  # quotes on even ticks, raises on odd ones
+    with TestClient(make_app(store)) as client:
+        client.post(f"/admin/lobbies/{LOBBY}/prepare", headers=ADMIN)
+        client.post(f"/admin/lobbies/{LOBBY}/start", headers=ADMIN)
+        wait_for(lambda: store.lobbies[LOBBY].status == "finished")
+    g1 = {r["tick"]: r["actions"] for r in store.tables["order_batches"] if r["group_id"] == "g1"}
+    odd = [acts for t, acts in g1.items() if t % 2]
+    assert odd and all([a["type"] for a in acts] == ["cancel_all"] for acts in odd)
 
 
 def test_bots_follow_the_active_submission(monkeypatch):
