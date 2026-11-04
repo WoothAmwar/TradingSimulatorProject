@@ -1,5 +1,6 @@
 import { Suspense } from "react";
 import { GroupTabs } from "@/components/group/group-tabs";
+import { RenameGroup } from "@/components/group/rename-group";
 import { getGroupContext } from "@/lib/group";
 
 export default function GroupLayout({ children, params }: LayoutProps<"/g/[slug]">) {
@@ -20,7 +21,7 @@ async function GroupHeader({ params }: Pick<LayoutProps<"/g/[slug]">, "params">)
     <div className="flex flex-wrap items-end justify-between gap-4 border-b border-border pb-3">
       <div>
         <p className="text-xs uppercase tracking-wide text-muted">Group</p>
-        <h1 className="text-2xl font-semibold">{group.name}</h1>
+        <RenameGroup groupId={group.id} name={group.name} />
         {!isMember && <p className="text-xs text-accent">Viewing as admin</p>}
       </div>
       <GroupTabs slug={slug} />

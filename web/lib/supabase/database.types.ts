@@ -657,6 +657,7 @@ export type Database = {
         Args: { p_token: string }
         Returns: { name: string; slug: string }[]
       }
+      rename_group: { Args: { p_group: string; p_name: string }; Returns: undefined }
       rotate_invite: { Args: { p_group: string }; Returns: string }
       set_active_submission: {
         Args: { p_lobby: string; p_submission: string }

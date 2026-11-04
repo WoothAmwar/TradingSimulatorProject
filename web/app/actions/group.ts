@@ -13,6 +13,15 @@ export async function joinGroup(token: string): Promise<ActionResult> {
   redirect(`/g/${slug}`);
 }
 
+/** Any member (or an admin) may rename the group. Its URL slug stays the same. */
+export async function renameGroup(groupId: string, name: string): Promise<ActionResult> {
+  const { supabase } = await requireViewer();
+  const { error } = await supabase.rpc("rename_group", { p_group: groupId, p_name: name });
+  if (error) return { ok: false, error: error.message };
+  refresh();
+  return { ok: true };
+}
+
 /** Saves a new immutable version of the group's code. `lobbyId` marks code for a static round. */
 export async function saveSubmission(input: {
   groupId: string;

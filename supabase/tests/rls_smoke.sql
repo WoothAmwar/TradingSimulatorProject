@@ -135,6 +135,22 @@ begin
     insert into public.groups (slug, name) values ('rogue', 'Rogue');
     r := r || ' alice.createGroup=ALLOWED';
   exception when others then r := r || ' alice.createGroup=denied'; end;
+  perform public.rename_group(ga, E'  Team \t Alpha ');
+  r := r || ' alice.rename=' || (select name from public.groups where id = ga);              -- Team Alpha
+  begin
+    perform public.rename_group(ga, 'team b');
+    r := r || ' alice.renameTaken=ALLOWED';
+  exception when unique_violation then r := r || ' alice.renameTaken=denied'; end;
+  begin
+    perform public.rename_group(ga, '   ');
+    r := r || ' alice.renameBlank=ALLOWED';
+  exception when check_violation then r := r || ' alice.renameBlank=denied'; end;
+  begin
+    perform public.rename_group(gb, 'Mine now');
+    r := r || ' alice.renameB=ALLOWED';
+  exception when others then r := r || ' alice.renameB=denied'; end;
+  update public.groups set slug = 'alpha' where id = ga;
+  get diagnostics n = row_count;                             r := r || ' alice.editSlug=' || n;  -- 0
   delete from public.group_members where user_id = alice;
   get diagnostics n = row_count;                             r := r || ' alice.leave=' || n;     -- 0
   begin
@@ -167,6 +183,8 @@ begin
   select count(*) into n from public.group_invites where group_id in (ga, gb); r := r || ' admin.invites=' || n;   -- 2
   select count(*) into n from storage.objects where name = any(files); r := r || ' admin.datasets=' || n; -- 2
   select count(*) into n from public.round_attempts where lobby_id = round_open; r := r || ' admin.attempts=' || n; -- 3
+  perform public.rename_group(gb, 'Team Bee');
+  r := r || ' admin.renameB=' || (select name from public.groups where id = gb);             -- Team Bee
   begin
     delete from public.groups where id = ga;  -- cascades to its entries, attempts and submissions
     raise sqlstate 'ZZ001';  -- undo it so later checks still see team A

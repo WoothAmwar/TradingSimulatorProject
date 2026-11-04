@@ -47,7 +47,14 @@ export async function createGroup(form: FormData) {
     const { error } = await supabase
       .from("groups")
       .insert({ name, slug, created_by: viewer.id });
-    if (error) throw new Error(error.code === "23505" ? `Slug "${slug}" is taken` : error.message);
+    if (error?.code === "23505") {
+      throw new Error(
+        error.message.includes("groups_name_key")
+          ? `A group is already called "${name}"`
+          : `Slug "${slug}" is taken`,
+      );
+    }
+    if (error) throw new Error(error.message);
   });
 }
 

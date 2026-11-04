@@ -163,7 +163,7 @@ class BotPool:
             return
         wanted: dict[str, str | None] = {}
         for row in rows:
-            self.runner.groups.setdefault(row["group_id"], row["name"])
+            self.runner.groups[row["group_id"]] = row["name"]  # picks up renames mid-round
             wanted[row["group_id"]] = row["submission_id"]
         started = []
         now = time.monotonic()

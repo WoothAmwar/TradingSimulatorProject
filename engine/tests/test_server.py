@@ -286,6 +286,10 @@ def test_bots_follow_the_active_submission(monkeypatch):
         assert {"kind": "error", "text": "SyntaxError: invalid syntax"} in g2.console
         assert {"kind": "log", "text": "printed while loading"} in g2.console
 
+        # A group renamed mid-round shows its new name on the leaderboard.
+        store.group_names["g1"] = "Alpha Prime"
+        wait_for(lambda: any(r["name"] == "Alpha Prime" for r in runner.leaderboard))
+
         # A new selection takes over: the old bot stops and its resting orders are cancelled.
         old = g1.bot
         select(store, "g1", "s3", "quiet")
